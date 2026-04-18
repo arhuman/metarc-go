@@ -3,7 +3,7 @@ package logtempl
 import (
 	"testing"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 func TestTemplate_ID(t *testing.T) {

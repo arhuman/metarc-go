@@ -1,4 +1,4 @@
-module github.com/arhuman/metarc
+module github.com/arhuman/metarc-go
 
 go 1.25.0
 

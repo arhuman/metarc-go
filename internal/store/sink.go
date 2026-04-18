@@ -7,7 +7,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 	"github.com/klauspost/compress/zstd"
 	"github.com/zeebo/blake3"
 )

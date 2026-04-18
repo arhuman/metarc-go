@@ -1,8 +1,8 @@
 package plan
 
 import (
-	"github.com/arhuman/metarc/internal/store/transforms"
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/internal/store/transforms"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 func init() {

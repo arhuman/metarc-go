@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 // Walk returns a channel of Entry for every regular file, directory, and symlink

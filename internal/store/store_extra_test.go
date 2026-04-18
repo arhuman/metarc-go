@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 // TestWriteEntryWithSHA writes entries using a pre-computed SHA and verifies

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 // fakeFileInfo implements fs.FileInfo for testing.

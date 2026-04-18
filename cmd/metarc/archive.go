@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/arhuman/metarc/internal/store"
-	"github.com/arhuman/metarc/internal/runtime"
+	"github.com/arhuman/metarc-go/internal/store"
+	"github.com/arhuman/metarc-go/internal/runtime"
 	"github.com/spf13/cobra"
 )
 

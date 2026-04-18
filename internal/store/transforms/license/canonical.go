@@ -13,7 +13,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 	"github.com/zeebo/blake3"
 )
 

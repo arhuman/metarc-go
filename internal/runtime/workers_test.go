@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/arhuman/metarc/internal/runtime"
-	"github.com/arhuman/metarc/internal/store"
+	"github.com/arhuman/metarc-go/internal/runtime"
+	"github.com/arhuman/metarc-go/internal/store"
 )
 
 // TestArchive_workers verifies that archiving with different worker counts

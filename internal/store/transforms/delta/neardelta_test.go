@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 type fakeFileInfo struct{ size int64 }

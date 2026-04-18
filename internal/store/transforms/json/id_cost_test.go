@@ -3,7 +3,7 @@ package json
 import (
 	"testing"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 func TestCanonical_ID(t *testing.T) {

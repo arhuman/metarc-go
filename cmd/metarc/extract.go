@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/arhuman/metarc/internal/runtime"
+	"github.com/arhuman/metarc-go/internal/runtime"
 	"github.com/spf13/cobra"
 )
 

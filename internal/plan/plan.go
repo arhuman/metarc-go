@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 // Registry is the ordered list of transforms. First applicable transform wins.

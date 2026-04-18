@@ -10,9 +10,9 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/arhuman/metarc/internal/scan"
-	"github.com/arhuman/metarc/internal/store"
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/internal/scan"
+	"github.com/arhuman/metarc-go/internal/store"
+	"github.com/arhuman/metarc-go/pkg/marc"
 	"github.com/zeebo/blake3"
 )
 

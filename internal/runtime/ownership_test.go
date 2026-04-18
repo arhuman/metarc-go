@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/arhuman/metarc/internal/runtime"
+	"github.com/arhuman/metarc-go/internal/runtime"
 )
 
 // checkOwnership compares uid/gid between two FileInfo values.

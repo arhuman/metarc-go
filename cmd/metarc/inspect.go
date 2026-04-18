@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/arhuman/metarc/internal/store"
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/internal/store"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 // newInspectCmd returns the `metarc inspect` subcommand.

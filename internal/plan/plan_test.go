@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 // fakeTransform is a controllable marc.Transform for testing.

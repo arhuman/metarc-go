@@ -7,7 +7,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 const nearDupID marc.TransformID = "near-dup-delta/v1"

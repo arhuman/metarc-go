@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/arhuman/metarc/internal/runtime"
-	"github.com/arhuman/metarc/internal/store"
+	"github.com/arhuman/metarc-go/internal/runtime"
+	"github.com/arhuman/metarc-go/internal/store"
 )
 
 // TestBench_runs verifies the bench workflow: archive with plan log kept,

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/arhuman/metarc/internal/plan"
-	"github.com/arhuman/metarc/internal/store"
-	"github.com/arhuman/metarc/pkg/marc"
+	"github.com/arhuman/metarc-go/internal/plan"
+	"github.com/arhuman/metarc-go/internal/store"
+	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
 // Extract restores a .marc archive into destDir.
