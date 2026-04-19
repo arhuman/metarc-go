@@ -30,8 +30,31 @@ Every commit message must have the format:
 
 Valid types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
 
-`make tools` installs commitlint and sets up the local git hook automatically.
-CI will reject PRs with non-conforming commit messages.
+#### Automated enforcement
+
+**CI**: PRs with non-conforming commit messages are rejected automatically.
+
+**Local (git hook)**: `make tools` installs commitlint and sets up the local git `commit-msg` hook automatically.
+
+**Local (jj users)**: If you use [Jujutsu](https://github.com/jj-vcs/jj) instead of git, add this shell function to your `~/.zshrc` (or `~/.bashrc`) to validate messages on `jj describe -m`:
+
+```bash
+jj() {
+  if [[ "$1" == "desc" || "$1" == "describe" ]] && [[ "$2" == "-m" ]]; then
+    if echo "$3" | commitlint lint; then
+      command jj "$@"
+    else
+      echo "Commit message rejected by commitlint."
+      return 1
+    fi
+  else
+    command jj "$@"
+  fi
+}
+compdef _jj jj  # preserve zsh autocompletion
+```
+
+Requires commitlint in your `$PATH` (`make tools` or `go install github.com/conventionalcommit/commitlint@v0.12.0`).
 
 ### Build and Test
 Before submitting a Pull Request, ensure that your code builds and all tests pass:
