@@ -56,13 +56,65 @@ func Archive(ctx context.Context, marcPath, root, compressor string, keepPlanLog
 }
 
 // ArchiveWithOpts creates a .marc archive with full control over options.
+// The archive contains a single source tree rooted at root; the root directory
+// itself is recorded as the synthetic "." entry.
 func ArchiveWithOpts(ctx context.Context, marcPath, root, compressor string, keepPlanLog bool, aopts ArchiveOpts) error {
+	return archiveWithSources(ctx, marcPath, []string{root}, compressor, keepPlanLog, aopts, false)
+}
+
+// ArchiveMulti creates a .marc archive of multiple source directory trees.
+// Each source becomes a top-level directory inside the archive, named after
+// its basename. If two sources share the same basename, an error is returned.
+//
+// This is intended for bundling several independent directories — for
+// example, a set of sibling project folders — into one .marc file. Extracting
+// such an archive restores each source as a sibling directory under the
+// destination.
+//
+// For a single-source archive, prefer Archive / ArchiveWithOpts: those
+// preserve the existing single-root archive layout (root recorded as ".").
+func ArchiveMulti(ctx context.Context, marcPath string, roots []string, compressor string, keepPlanLog bool, workers ...int) error {
+	opts := ArchiveOpts{SolidBlockSize: DefaultSolidBlockSize}
+	if len(workers) > 0 && workers[0] > 0 {
+		opts.Workers = workers[0]
+	}
+	return ArchiveMultiWithOpts(ctx, marcPath, roots, compressor, keepPlanLog, opts)
+}
+
+// ArchiveMultiWithOpts creates a multi-source .marc archive with full control
+// over options. See ArchiveMulti for a description of the layout.
+func ArchiveMultiWithOpts(ctx context.Context, marcPath string, roots []string, compressor string, keepPlanLog bool, aopts ArchiveOpts) error {
+	if len(roots) == 0 {
+		return fmt.Errorf("runtime.ArchiveMulti: no source roots provided")
+	}
+	return archiveWithSources(ctx, marcPath, roots, compressor, keepPlanLog, aopts, true)
+}
+
+// archiveWithSources is the shared implementation for single- and multi-root
+// archiving. When multi is false, roots must contain exactly one entry and the
+// legacy single-root walk is used (root recorded as "."). When multi is true,
+// each source is prefixed with its basename and surfaces as a top-level
+// directory in the archive.
+func archiveWithSources(ctx context.Context, marcPath string, roots []string, compressor string, keepPlanLog bool, aopts ArchiveOpts, multi bool) error {
 	numWorkers := runtime.NumCPU()
 	if aopts.Workers > 0 {
 		numWorkers = aopts.Workers
 	}
 
-	slog.Info("archiving", "root", root, "output", marcPath, "compressor", compressor, "dict", aopts.DictCompress, "workers", numWorkers, "solid", aopts.SolidBlockSize)
+	// Resolve multi roots upfront so we can surface basename collisions before
+	// opening the output file.
+	var resolved []scan.MultiRoot
+	if multi {
+		var err error
+		resolved, err = scan.ResolveMultiRoots(roots)
+		if err != nil {
+			return fmt.Errorf("runtime.Archive: %w", err)
+		}
+	} else if len(roots) != 1 {
+		return fmt.Errorf("runtime.Archive: single-root archive requires exactly 1 source, got %d", len(roots))
+	}
+
+	slog.Info("archiving", "roots", roots, "output", marcPath, "compressor", compressor, "dict", aopts.DictCompress, "workers", numWorkers, "solid", aopts.SolidBlockSize, "multi", multi)
 
 	var opts []store.Option
 	if compressor != "" {
@@ -74,8 +126,12 @@ func ArchiveWithOpts(ctx context.Context, marcPath, root, compressor string, kee
 
 	// prescan: walk source tree upfront, train dict before archiving.
 	if dictMode == DictPrescan && useZstd {
-		slog.Info("training zstd dictionary (prescan)", "root", root)
-		dict, err := store.TrainDictionary(root, 0, 0)
+		// Dictionary training samples a single root. For multi-root archives we
+		// train against the first source; this is a pragmatic default that
+		// keeps the code simple while still benefiting cross-file dedup.
+		trainRoot := roots[0]
+		slog.Info("training zstd dictionary (prescan)", "root", trainRoot)
+		dict, err := store.TrainDictionary(trainRoot, 0, 0)
 		if err != nil {
 			slog.Warn("dict training failed, continuing without dictionary", "err", err)
 		} else if dict != nil {
@@ -105,8 +161,21 @@ func ArchiveWithOpts(ctx context.Context, marcPath, root, compressor string, kee
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	entries := scan.Walk(ctx, root)
+	var entries <-chan marc.Entry
+	if multi {
+		entries = scan.WalkMulti(ctx, resolved)
+	} else {
+		entries = scan.Walk(ctx, roots[0])
+	}
 
+	return runArchivePipeline(ctx, cancel, w, entries, numWorkers, keepPlanLog)
+}
+
+// runArchivePipeline consumes entries from the scan channel, hashes files in
+// parallel using numWorkers goroutines, re-orders results to preserve scan
+// order, and writes them through the store.Writer. On success, it optionally
+// clears the plan_log table.
+func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store.Writer, entries <-chan marc.Entry, numWorkers int, keepPlanLog bool) error {
 	// sequenced wraps each entry with a sequence number for re-ordering.
 	type sequenced struct {
 		entry marc.Entry
