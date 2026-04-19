@@ -65,3 +65,36 @@ jobs:
           files: coverage.out
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  commitlint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install commitlint
+        run: go install github.com/conventionalcommit/commitlint@v0.12.0
+
+      - name: Lint PR commit messages
+        run: |
+          FAIL=0
+          for sha in $(git log --format=%H origin/${{ github.base_ref }}..HEAD); do
+            MSG=$(git log -1 --format=%B "$sha")
+            if ! echo "$MSG" | commitlint lint; then
+              echo "::error::Commit $sha has an invalid message"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo ""
+            echo "Some commit messages do not follow conventional commits format."
+            echo "See: https://www.conventionalcommits.org/"
+            exit 1
+          fi

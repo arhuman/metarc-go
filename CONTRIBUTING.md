@@ -19,6 +19,20 @@ It's people like you that make the open-source community such a great place to l
 * **Go**: Version 1.26 or higher is recommended.
 * **Golangci-lint**: We use [golangci-lint](https://golangci-lint.run/) for static analysis. (use `make audit`)
 
+### Commit Messages
+
+We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification.
+Every commit message must have the format:
+
+```
+<type>(<optional scope>): <description>
+```
+
+Valid types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
+
+`make tools` installs commitlint and sets up the local git hook automatically.
+CI will reject PRs with non-conforming commit messages.
+
 ### Build and Test
 Before submitting a Pull Request, ensure that your code builds and all tests pass:
 

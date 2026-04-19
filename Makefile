@@ -74,6 +74,10 @@ tools:
 	@echo "Installing Go tools..."
 	@go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.3
 	@go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+	@go install github.com/conventionalcommit/commitlint@v0.12.0
+	@if ! git config --local core.hooksPath > /dev/null 2>&1; then \
+		commitlint init; \
+	fi
 	@echo "Tools installed in $(shell go env GOBIN || go env GOPATH)/bin"
 
 # ==================================================================================== #
