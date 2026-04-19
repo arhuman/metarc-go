@@ -5,13 +5,21 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/arhuman/metarc-go/internal/store"
 	"github.com/arhuman/metarc-go/internal/runtime"
+	"github.com/arhuman/metarc-go/internal/store"
 	"github.com/spf13/cobra"
 )
 
 // newArchiveCmd returns the `metarc archive` subcommand.
-// Usage: metarc archive <output.marc> <source-dir>
+//
+// Usage:
+//
+//	metarc archive <output.marc> <source-dir> [additional-source-dir...]
+//
+// When a single source is given, the archive is laid out with that source as
+// its synthetic "." root (original behavior). When multiple sources are
+// given, each one becomes a top-level directory inside the archive, named
+// after its basename; basename collisions are rejected upfront.
 func newArchiveCmd() *cobra.Command {
 	var compressor string
 	var keepPlanLog bool
@@ -22,9 +30,22 @@ func newArchiveCmd() *cobra.Command {
 	var solidBlockSize string
 
 	cmd := &cobra.Command{
-		Use:   "archive <output.marc> <source-dir>",
-		Short: "Create a .marc archive from a directory",
-		Args:  cobra.ExactArgs(2),
+		Use:   "archive <output.marc> <source-dir> [source-dir...]",
+		Short: "Create a .marc archive from one or more directories",
+		Long: `Create a .marc archive from one or more source directories.
+
+With a single source directory, the tree is archived with its root recorded
+as ".", matching the original behaviour.
+
+With multiple source directories, each source becomes a top-level directory
+inside the archive, named after its basename. For example:
+
+  metarc archive out.marc ./frontend ./backend ./docs
+
+produces an archive containing "frontend/...", "backend/...", and "docs/..."
+side by side. Extracting such an archive restores all three directories as
+siblings under the destination. Two sources may not share the same basename.`,
+		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keep := keepPlanLog || explain
 			opts := runtime.ArchiveOpts{
@@ -38,11 +59,21 @@ func newArchiveCmd() *cobra.Command {
 				}
 				opts.SolidBlockSize = size
 			}
-			if err := runtime.ArchiveWithOpts(cmd.Context(), args[0], args[1], compressor, keep, opts); err != nil {
+
+			marcPath := args[0]
+			sources := args[1:]
+
+			var err error
+			if len(sources) == 1 {
+				err = runtime.ArchiveWithOpts(cmd.Context(), marcPath, sources[0], compressor, keep, opts)
+			} else {
+				err = runtime.ArchiveMultiWithOpts(cmd.Context(), marcPath, sources, compressor, keep, opts)
+			}
+			if err != nil {
 				return err
 			}
 			if explain {
-				return printPlanSummary(cmd, args[0])
+				return printPlanSummary(cmd, marcPath)
 			}
 			return nil
 		},
