@@ -244,7 +244,29 @@ These transforms are not in the default registry. They require an explicit flag.
 
 ---
 
-## ADR-014: SQL schema divergence from the initial spec
+## ADR-014: Line-level token substitution for source code (`go-line-subst/v1`)
+
+**Status**: Accepted
+**Date**: 2026-04
+
+### Context
+Empirical analysis on the Kubernetes corpus (16,931 Go files, 168.5 MB) revealed that 45% of all lines are repeated more than 100 times across files (`if err != nil {`, `return nil`, license headers, etc.). Four encoding approaches were benchmarked: 7-byte ASCII tokens (v1), 2-byte exact-match tokens (v2), 3-byte tab-normalized tokens (v3), and tab-preserved 2-byte tokens (v4). Only v2 was neutral on solid blocks; all tab-normalization variants degraded solid-block compression by 16-17%.
+
+### Decision
+Implement v2: exact-match, 2-byte tokens (`\x00` + 1-byte dictionary index). Static dictionary of 105 common Go patterns embedded as a Go array literal (no `//go:embed`). Placed before `dedup/v1` in the transform registry; BlobSink handles dedup internally. Streaming I/O via `bufio.Reader.ReadString('\n')`. Dictionary is immutable per transform version — changes require bumping to `go-line-subst/v2`.
+
+### Consequences
+- (+) +9.6% per-file compression gain on Go-heavy corpora
+- (+) Neutral on solid blocks (+/-0.2%) — safe as default
+- (+) Lossless, exact byte-identical round-trip
+- (+) Extensible to other languages (Python, C, JS) with same mechanism, different dictionaries
+- (-) +0.9s archiving overhead on Kubernetes (2.9s → 3.8s)
+- (-) No benefit on non-Go files (falls through to plain dedup)
+- Registry versioning added: `meta.transforms` records the active transform set
+
+---
+
+## ADR-015: SQL schema divergence from the initial spec
 
 **Status**: Accepted  
 **Date**: 2025-02

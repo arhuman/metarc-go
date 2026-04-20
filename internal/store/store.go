@@ -143,6 +143,14 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 		return nil, fmt.Errorf("store.OpenWriter: meta: %w", err)
 	}
 
+	// Record the active transform registry for forward compatibility.
+	if _, err := db.Exec(`INSERT INTO meta (key, value) VALUES ('transforms', ?)`, plan.RegistryIDs()); err != nil {
+		_ = db.Close()
+		_ = outFile.Close()
+		_ = os.Remove(dbPath)
+		return nil, fmt.Errorf("store.OpenWriter: meta transforms: %w", err)
+	}
+
 	w := &Writer{
 		outFile:    outFile,
 		db:         db,

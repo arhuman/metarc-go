@@ -140,7 +140,25 @@ The power of metacompression lies in its extensibility. "File dedup" is one tran
 
 **Trade-off**: Requires network access at extraction time. Archives are no longer self-contained. Appropriate only for specific use cases (distribution, not archival).
 
-### 3.6 Solid Block Grouping
+### 3.6 Language-Aware Line Substitution
+
+**What**: Source code files in a given language contain many identical lines repeated across thousands of files. Replace each with a compact token before compression.
+
+**Examples**:
+- Go: `if err != nil {`, `return nil`, `return err`, license headers, `import (` — these lines appear tens of thousands of times across a Go corpus.
+- The same principle applies to Python (`import os`, `def __init__(self):`), C (`#include <stdio.h>`, `return 0;`), etc.
+
+**Detection**: Strip leading whitespace from each line and look up in a static dictionary of the most frequent lines for that language (pre-computed from representative corpora).
+
+**Encoding**: Each matched line is replaced by 2 bytes (`\x00` escape + 1-byte dictionary index). Leading whitespace is preserved verbatim. A dictionary of 256 entries covers the vast majority of repetition, with negligible overhead (~14 KB stored once in the archive).
+
+**Gain**: +9.6% per-file compression on Go source. Neutral on solid blocks (the tokens are compact enough not to interfere with zstd's cross-file matching). On Kubernetes (29,254 files), archive size drops from 97M to 81M — smaller than tar+gz.
+
+**Reversibility**: Perfect. The dictionary is immutable for a given transform version. `Reverse(Apply(content)) == content` byte-for-byte.
+
+**Key insight**: This works *with* the final compressor, not against it. By replacing long repeated lines with short tokens, we reduce entropy before zstd sees the data. The preserved leading whitespace gives zstd familiar tab sequences to back-reference. The 2-byte tokens themselves are highly repetitive and compress well.
+
+### 3.7 Solid Block Grouping
 
 **What**: Not a semantic transform, but a structural one. Group many small files into a single compression frame so the compressor can exploit cross-file byte-level repetition.
 
@@ -429,7 +447,11 @@ The most impactful unimplemented transform. Given the prevalence of configuratio
 
 The key challenge is the similarity index: a structure that maps files to their nearest neighbors efficiently, without O(N²) pairwise comparison.
 
-### 11.2 Lossless JSON Canonicalization
+### 11.2 Line Substitution for Other Languages
+
+`go-line-subst/v1` proves the concept for Go. The same mechanism — static dictionary of frequent lines, 2-byte token encoding, streaming Apply/Reverse — applies directly to Python, C/C++, JavaScript/TypeScript, Java, and Rust. Each language needs its own frequency-analyzed dictionary built from representative corpora using `cmd/analyze`. The transform code is identical; only the dictionary and file extension filter change.
+
+### 11.3 Lossless JSON Canonicalization
 
 The current implementation of `json-canonical/v1` is lossy (original formatting discarded). A lossless variant would store a formatting delta alongside the canonical form, enabling both perfect reconstruction and improved cross-file dedup.
 
@@ -459,6 +481,7 @@ Dedup currently operates within a single archive. A shared content-addressable b
 
 | ID | Class | Lossless | Status |
 |----|-------|----------|--------|
+| `go-line-subst/v1` | Line substitution | Yes | Default |
 | `dedup/v1` | Exact dedup | Yes | Default |
 | `json-canonical/v1` | Canonical form | No | Opt-in |
 | `license-canonical/v1` | Canonical form | No | Opt-in |

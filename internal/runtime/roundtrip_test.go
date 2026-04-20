@@ -887,3 +887,65 @@ func TestRoundTrip_solidBlockDedup(t *testing.T) {
 	}
 	compareDirectories(t, srcDir, restoreDir)
 }
+
+func TestRoundTrip_goLineSubst_corpus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipped with -short")
+	}
+
+	// Find the project root by walking up from the working directory until we find go.mod.
+	absCorpus := ""
+	dir, _ := os.Getwd()
+	for {
+		candidate := filepath.Join(dir, "corpora", "gin")
+		if _, err := os.Stat(candidate); err == nil {
+			absCorpus = candidate
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	if absCorpus == "" {
+		t.Skip("corpora/gin not available")
+	}
+
+	tmp := t.TempDir()
+	marcPath := filepath.Join(tmp, "gin.marc")
+	restoreDir := filepath.Join(tmp, "restored")
+	ctx := context.Background()
+
+	// Archive with default settings (go-line-subst registered, solid off).
+	if err := runtime.Archive(ctx, marcPath, absCorpus, "zstd", false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify go-line-subst/v1 was applied to some .go files.
+	r, err := store.OpenReader(marcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	goLineSubstCount := 0
+	if err := r.WalkEntries(func(_ string, e store.EntryRow) error {
+		if e.Transform == "go-line-subst/v1" {
+			goLineSubstCount++
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+
+	if goLineSubstCount == 0 {
+		t.Fatal("expected go-line-subst/v1 to be applied to some .go files, got 0")
+	}
+	t.Logf("go-line-subst/v1 applied to %d files", goLineSubstCount)
+
+	// Extract and verify byte-identical round-trip.
+	if err := runtime.Extract(ctx, marcPath, restoreDir); err != nil {
+		t.Fatal(err)
+	}
+	compareDirectories(t, absCorpus, restoreDir)
+}

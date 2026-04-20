@@ -80,6 +80,7 @@ metarc/
 │   ├── store/           Writer, Reader, blobSink, solidAccumulator, dict
 │   │   └── transforms/
 │   │       ├── dedup.go              dedup/v1 (lossless, default)
+│   │       ├── goline/goline.go      go-line-subst/v1 (lossless, default)
 │   │       ├── json/canonical.go     json-canonical/v1 (opt-in)
 │   │       ├── license/canonical.go  license-canonical/v1 (opt-in)
 │   │       ├── logtempl/template.go  log-template/v1 (opt-in)
@@ -355,6 +356,7 @@ type Transform interface {
 
 | ID | Mode | Applicable | Gain model | CPU model |
 |----|------|-----------|------------|-----------|
+| `go-line-subst/v1` | Lossless, **default** | `.go` files > 0B | `size/10` | `size/1024` |
 | `dedup/v1` | Lossless, **default** | Any file > 0B | `size` | `size/1024` |
 | `json-canonical/v1` | Lossless*, opt-in | `.json` ≤10MB | `size/4` | `size/512` |
 | `license-canonical/v1` | Lossy, opt-in | `LICENSE*` filenames | `size` | `512` |
@@ -362,6 +364,15 @@ type Transform interface {
 | `near-dup-delta/v1` | Stub | Never | — | — |
 
 \* json-canonical restores canonical form, not original formatting.
+
+**go-line-subst/v1** — line-level token substitution:
+```
+Apply:   read .go file line by line, strip leading whitespace, look up in 105-entry
+         static dictionary. Match → emit whitespace + \x00 + index_byte.
+         No match → emit original line unchanged. Write substituted content through sink.
+Reverse: read blob line by line, find \x00 marker, expand from dictionary.
+```
+Benchmarked at +9.6% per-file compression gain, neutral on solid blocks.
 
 ### Application / Reversal
 

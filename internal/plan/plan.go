@@ -5,6 +5,7 @@ package plan
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/arhuman/metarc-go/pkg/marc"
 )
@@ -19,6 +20,15 @@ type Decision struct {
 	EstimatedCPU  int64
 	Applied       bool
 	Reason        string // human-readable explanation
+}
+
+// RegistryIDs returns a comma-separated list of registered transform IDs.
+func RegistryIDs() string {
+	ids := make([]string, len(Registry))
+	for i, t := range Registry {
+		ids[i] = string(t.ID())
+	}
+	return strings.Join(ids, ",")
 }
 
 // Decide returns the chosen transform (or nil) and a Decision record for logging.
