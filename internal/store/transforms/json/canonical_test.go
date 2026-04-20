@@ -104,7 +104,7 @@ func TestApply_valid(t *testing.T) {
 	pretty := `{
   "name":  "metarc",
   "version": "1.0.0",
-  "description": "A meta-compression tool"
+  "description": "A metacompression tool"
 }`
 	e := makeEntry("package.json", int64(len(pretty)))
 	result, err := c.Apply(ctx, e, strings.NewReader(pretty), sink)

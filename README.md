@@ -6,130 +6,99 @@
 
 **Compress structure before bytes.**
 
-Metacompression is another level of compression.
-
-Metarc archives repositories much faster than `tar.gz` while staying competitive on size, by applying **structural and semantic transforms before compression**.
-
-Instead of only compressing bytes, Metarc reduces **redundancy in meaning**:
-licenses, JSON structure, logs, duplicated content, and repeated patterns across files.
-
-> New here? Start with [`docs/metacompression.md`](docs/metacompression.md).
+Metarc is an experimental archiver exploring *metacompression*:  
+reducing structural and semantic redundancy across files before applying standard compression.
 
 ---
 
-## Why this exists
+## What is metacompression?
 
-Traditional tools solve different parts of the problem:
+Traditional compressors (like `gzip`, `zstd`) operate on byte streams.
 
-- `tar` → packs files  
-- `gzip` / `zstd` → compress bytes  
-- dedup tools → remove identical blobs  
+Metarc explores a different idea:
 
-**Metarc sits in between.**
+> **compress meaning first, bytes second**
 
-It targets cross-file redundancy in real-world text-heavy data:
+Instead of only compressing raw data, it tries to:
+- deduplicate repeated content across files
+- normalize structured formats (JSON, logs, etc.)
+- detect common patterns (licenses, boilerplate, generated code)
 
-- source code repositories  
-- configs  
-- logs  
-- structured datasets  
+Then it applies a standard compressor on top.
 
-> **Metarc compresses structure before it compresses bytes.**
+The goal is to unlock optimizations that byte-level compression alone cannot see.
 
 ---
 
-## Early benchmark
+## Current status
 
-On real repositories, Metarc is already **much faster than `tar.gz`** while producing similarly sized archives — and sometimes smaller ones.
+Metarc is **experimental, but already usable**.
 
-| Repo | Original | Files | tgz time | tgz size | marc time | marc size |
-|------|----------|-------|----------|----------|-----------|-----------|
-| kubernetes | 374M | 29254 | 17.7s | 96M | **2.9s** | 97M |
-| docker-compose | 4.5M | 706 | 0.37s | 1.2M | **0.086s** | 1.1M |
-| vuejs | 9.8M | 732 | 0.43s | 3.3M | **0.094s** | 3.3M |
-| numpy | 50M | 2371 | 1.64s | 19M | **0.37s** | 19M |
-| redis | 28M | 1784 | 1.06s | 9.7M | **0.24s** | 9.0M |
-| bootstrap | 27M | 820 | 0.72s | 15M | **0.16s** | 14M |
-| express | 1.6M | 242 | 0.13s | 356K | **0.028s** | 356K |
-| react | 65M | 6888 | 3.61s | 21M | **0.63s** | 18M |
-
-(tar version used: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8)
-
-**Takeaway:**
-- much faster than `tar.gz`
-- often similar size
-- sometimes smaller
-
-You can reproduce this table with `scripts/run_bench.sh`, or test any repository with `scripts/compare_on_repo.sh`:
-
-```bash
-# Reproduce the full benchmark table
-./scripts/run_bench.sh
-
-# Benchmark a single repo
-./scripts/compare_on_repo.sh --name django --repo https://github.com/django/django
-
-# Verify round-trip integrity only (exit code 0 = success)
-./scripts/compare_on_repo.sh --name django --repo https://github.com/django/django --mode test
-
-# Show progress/log output
-./scripts/compare_on_repo.sh --name django --repo https://github.com/django/django --mode log
-```
+- Works on real repositories
+- Supports multiple transforms and strategies
+- Designed for experimentation and iteration
 
 ---
 
-## What makes Metarc different
-
-Metarc is not just a byte-stream compressor.
-
-It can **rewrite data into a lower-entropy representation** before handing it to the final compressor.
-
-Current transforms include:
-
-- content deduplication  
-- license canonicalization  
-- JSON canonicalization  
-- log template extraction  
-
-Each transform is:
-- versioned  
-- reversible at the format level  
-- applied only when it appears worth it  
+> [!NOTE]
+> Early speed comparisons against `tar + gzip` overstated Metarc’s advantage: most of the gap came from using `zstd`, not from Metarc’s architecture alone.
+>
+> A fairer comparison against `tar + zstd` shows that Metarc is not yet competitive with an optimized tar-based pipeline.
+>
+> Its value today is different: Metarc is already a usable playground for exploring metacompression ideas, structural transforms, and cross-file compression strategies.
 
 ---
 
-## Built for experimentation
+## Why Metarc exists
 
-Metarc is designed as a **codebase for experimenting with meta-compression**.
+Metarc is not (yet) trying to replace `tar`.
 
-You can:
+It exists to explore a different space:
 
-- implement new transforms in code  
-- tweak heuristics and trade-offs  
-- explore cross-file compression strategies  
-- test ideas on real datasets  
+- cross-file compression
+- semantic transforms
+- corpus-aware optimization
+- new compression heuristics
 
-This is not a plugin system.  
-It is a compact architecture for iterating on compression ideas quickly.
-(Only 2000 lines of Go currently)
+Think of it as a **playground for compression ideas**, not a finished product.
 
 ---
 
-## Archive format
+## Benchmarks
 
-A `.marc` archive is a self-contained binary:
+| Repo | Original size | Files | tgz compression | tgz size | metarc compression | metarc size | % size of tgz |
+|------|---------------|-------|-----------------|----------|-------------------|-------------|----------------|
+| kubernetes | 374M | 29254 | 0m17.685s | 96M | 0m2.902s | 97M | 90.6% |
+| docker-compose | 4.5M | 706 | 0m0.374s | 1.2M | 0m0.086s | 1.1M | 97.7% |
+| vuejs | 9.8M | 732 | 0m0.431s | 3.3M | 0m0.094s | 3.3M | 100.7% |
+| numpy | 50M | 2371 | 0m1.645s | 19M | 0m0.369s | 19M | 98.2% |
+| redis | 28M | 1784 | 0m1.065s | 9.7M | 0m0.239s | 9.0M | 99.5% |
+| bootstrap | 27M | 820 | 0m0.729s | 15M | 0m0.158s | 14M | 93.6% |
+| express | 1.6M | 242 | 0m0.129s | 356K | 0m0.028s | 356K | 100.4% |
+| react | 65M | 6888 | 0m3.612s | 21M | 0m0.633s | 18M | 92.8% |
 
-- blob region (data)
-- compressed SQLite catalog (metadata)
-- footer for fast lookup
-- content-addressable deduplication
-- optional solid block compression
-
-For full details, see [`docs/architecture.md`](docs/architecture.md).
+Results vary depending on dataset size and redundancy patterns.
 
 ---
 
 ## Usage
+
+### Install
+
+```bash
+git clone https://github.com/arhuman/metarc-go
+cd metarc-go
+make install
+```
+This installs `marc` to your `$GOBIN` (or `$GOPATH/bin`).
+
+## Test
+
+```bash
+make test
+```
+
+---
 
 ### Create an archive
 
@@ -154,29 +123,6 @@ marc inspect repo.marc
 ```bash
 marc bench ./my-repo
 ```
-
----
-
-## Why this is interesting
-
-Metarc is useful in two ways:
-
-1. **a fast, practical archive format**
-2. **a real platform for testing semantic compression ideas**
-
-The second part is the real ambition.
-
-> What if an archiver understood what it was archiving?
-
----
-
-## Status
-
-Metarc is **experimental, but already usable and useful**.
-
-The current implementation validates the core idea:
-semantic preprocessing + standard compression can already produce strong results.
-
 ---
 
 ## Documentation
@@ -186,30 +132,7 @@ semantic preprocessing + standard compression can already produce strong results
 
 ---
 
-## Build
-
-```bash
-make build
-```
-
-## Install
-
-```bash
-make install
-```
-
-This installs `marc` to your `$GOBIN` (or `$GOPATH/bin`).
-
-## Test
-
-```bash
-make test
-```
-
----
-
 ## License
 
 MIT -- see [LICENSE](LICENSE).
 
----

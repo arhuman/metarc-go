@@ -1,4 +1,4 @@
-// Command metarc is the CLI entry point for the semantic meta-compression
+// Command metarc is the CLI entry point for the metacompression-based archiver
 // archiver.
 package main
 

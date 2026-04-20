@@ -25,7 +25,7 @@
 
 ## 1. Overview
 
-Metarc is a **semantic meta-compression archiver**. It operates above a final byte-stream compressor (zstd) by exploiting structural and cross-file redundancy in text corpora — source code, configs, logs, structured datasets.
+Metarc is a **semantic metacompression archiver**. It operates above a final byte-stream compressor (zstd) by exploiting structural and cross-file redundancy in text corpora — source code, configs, logs, structured datasets.
 
 ```
 Source files

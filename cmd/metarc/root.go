@@ -6,7 +6,7 @@ import "github.com/spf13/cobra"
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "metarc",
-		Short:   "Metarc — semantic meta-compression archiver",
+		Short:   "Metarc — Metacompression-based archiver",
 		Version: version + " (" + commit + ", " + date + ")",
 	}
 	cmd.AddCommand(

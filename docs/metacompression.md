@@ -6,9 +6,9 @@
 
 ## Preface
 
-This article attempts to give meta-compression a precise definition, a taxonomy, and a theoretical foundation — going beyond the proof-of-concept origins in [jntar](https://github.com/arhuman/jntar) toward a rigorous framework. It draws on a decade of iteration: the original JavaScript prototype, the lessons learned from its limitations, and the design decisions baked into its Go successor, Metarc.
+This article attempts to give metacompression a precise definition, a taxonomy, and a theoretical foundation — going beyond the proof-of-concept origins in [jntar](https://github.com/arhuman/jntar) toward a rigorous framework. It draws on a decade of iteration: the original JavaScript prototype, the lessons learned from its limitations, and the design decisions baked into its Go successor, Metarc.
 
-The goal is not to claim that meta-compression outperforms all other techniques on all data. It does not. The goal is to show *why* it can dramatically outperform byte-stream compressors on specific classes of data, *when* that advantage disappears, and *how* to implement it correctly.
+The goal is not to claim that metacompression outperforms all other techniques on all data. It does not. The goal is to show *why* it can dramatically outperform byte-stream compressors on specific classes of data, *when* that advantage disappears, and *how* to implement it correctly.
 
 ---
 
@@ -29,35 +29,35 @@ Three files. Identical content. The compressor may recognize some repetition if 
 
 Now consider what a human archivist would do: notice that all three files are identical, store one copy, and record "the others are the same." This is trivially better — and yet no standard archiver does it.
 
-This gap — between what a compressor *could* know about the data structure and what it *actually* exploits — is the space where meta-compression operates.
+This gap — between what a compressor *could* know about the data structure and what it *actually* exploits — is the space where metacompression operates.
 
 ---
 
 ## 2. What Is Meta-Compression?
 
-Meta-compression is **compression that operates above the byte stream**, exploiting structural and semantic properties of the data that a byte-level compressor cannot see.
+Metacompression is **compression that operates above the byte stream**, exploiting structural and semantic properties of the data that a byte-level compressor cannot see.
 
 Two defining characteristics:
 
-1. **It is aware of the unit of meaning.** For filesystems, that unit is typically a file. A meta-compressor knows that `MIT.txt` at path A and `MIT.txt` at path B are the same semantic object, not just a coincidentally repeated byte sequence.
+1. **It is aware of the unit of meaning.** For filesystems, that unit is typically a file. A metacompressor knows that `MIT.txt` at path A and `MIT.txt` at path B are the same semantic object, not just a coincidentally repeated byte sequence.
 
-2. **It produces output that is still valid input for a byte-stream compressor.** Meta-compression is a *pre-processing layer*, not a replacement for entropy coding. It reduces redundancy *before* the final compressor sees the data, amplifying its effectiveness.
+2. **It produces output that is still valid input for a byte-stream compressor.** Metacompression is a *pre-processing layer*, not a replacement for entropy coding. It reduces redundancy *before* the final compressor sees the data, amplifying its effectiveness.
 
 ```
 Source data
     │
-    ▼  ← meta-compression operates here
+    ▼  ← metacompression operates here
 Semantically reduced data
     │
     ▼  ← byte-stream compressor operates here
 Archive
 ```
 
-This layering is the key architectural insight. Meta-compression and byte-stream compression are not alternatives — they are complements. Each works on a different kind of redundancy:
+This layering is the key architectural insight. Metacompression and byte-stream compression are not alternatives — they are complements. Each works on a different kind of redundancy:
 
 | Layer | Redundancy exploited | Granularity |
 |-------|---------------------|-------------|
-| Meta-compression | Cross-file, semantic, structural | Files, records, documents |
+| Metacompression | Cross-file, semantic, structural | Files, records, documents |
 | Byte-stream compression | Intra-stream byte patterns | Bytes, sliding windows |
 | Entropy coding | Symbol frequency distributions | Individual symbols |
 
@@ -65,7 +65,7 @@ This layering is the key architectural insight. Meta-compression and byte-stream
 
 ## 3. A Taxonomy of Meta-Compression Transforms
 
-The power of meta-compression lies in its extensibility. "File dedup" is one transform. There are many others, each targeting a specific class of structural redundancy.
+The power of metacompression lies in its extensibility. "File dedup" is one transform. There are many others, each targeting a specific class of structural redundancy.
 
 ### 3.1 Exact Deduplication
 
@@ -156,7 +156,7 @@ The power of meta-compression lies in its extensibility. "File dedup" is one tra
 
 ## 4. The Cost-Gain Model
 
-Not every transform should be applied to every file. A poorly calibrated meta-compressor can *increase* archive size (by adding metadata overhead for transforms that save nothing) or *slow down* archiving unacceptably.
+Not every transform should be applied to every file. A poorly calibrated metacompressor can *increase* archive size (by adding metadata overhead for transforms that save nothing) or *slow down* archiving unacceptably.
 
 The core principle: **a transform should be applied only when its estimated benefit exceeds its estimated cost**.
 
@@ -209,7 +209,7 @@ This is conservative (`>`, not `≥`): when gain equals cost, we do nothing. The
 
 ## 5. Meta-Compression as a Transform Pipeline
 
-The practical implementation of meta-compression is a **pipeline of reversible transforms**, each targeting a specific class of redundancy.
+The practical implementation of metacompression is a **pipeline of reversible transforms**, each targeting a specific class of redundancy.
 
 ```
 File on disk
@@ -277,7 +277,7 @@ The distinction is critical for correctness:
 
 ## 6. The Deduplication Mechanics
 
-Exact deduplication is the foundational meta-compression transform. It deserves a precise treatment.
+Exact deduplication is the foundational metacompression transform. It deserves a precise treatment.
 
 ### 6.1 Content Addressing
 
@@ -374,7 +374,7 @@ The additional gain over jntar comes primarily from:
 
 ## 9. Design Principles for Meta-Compression Systems
 
-Building on theory and practice, several principles emerge for designing robust meta-compression systems.
+Building on theory and practice, several principles emerge for designing robust metacompression systems.
 
 ### 9.1 Reversibility First
 
@@ -386,7 +386,7 @@ Archives may outlive the software that created them. If an archive was created w
 
 ### 9.3 Conservative Planning
 
-When in doubt, do not transform. The cost of storing a few extra bytes is negligible. The cost of extracting corrupted data is unbounded. A meta-compressor that declines transforms it is not confident about is more trustworthy than one that aggressively applies every heuristic.
+When in doubt, do not transform. The cost of storing a few extra bytes is negligible. The cost of extracting corrupted data is unbounded. A metacompressor that declines transforms it is not confident about is more trustworthy than one that aggressively applies every heuristic.
 
 ### 9.4 Observability
 
@@ -409,9 +409,9 @@ A planner that always applies some transform is not a planner — it is a forced
 
 Intellectual honesty requires stating the limits.
 
-**It does not help with incompressible data.** Encrypted files, compressed media (JPEG, MP4, ZIP), and random data have no structural redundancy for any transform to exploit. Meta-compression does nothing here.
+**It does not help with incompressible data.** Encrypted files, compressed media (JPEG, MP4, ZIP), and random data have no structural redundancy for any transform to exploit. Metacompression does nothing here.
 
-**It requires domain knowledge.** Each transform embeds assumptions about the data (this looks like JSON, this is a license file). A general-purpose byte-stream compressor needs no such assumptions. Meta-compression trades generality for effectiveness on specific domains.
+**It requires domain knowledge.** Each transform embeds assumptions about the data (this looks like JSON, this is a license file). A general-purpose byte-stream compressor needs no such assumptions. Metacompression trades generality for effectiveness on specific domains.
 
 **Lossy transforms require user trust.** When a license file is replaced by its SPDX identifier, the user must trust that the canonical text is equivalent to their original. This is true for standard licenses, false for modified or custom ones.
 
