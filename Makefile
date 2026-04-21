@@ -41,8 +41,10 @@ clean:
 	rm -f bin/${BINARY_NAME}
 
 ## install: install marc to $GOBIN (or $GOPATH/bin)
-install:
-	CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" ./cmd/metarc
+install: build
+	@GOBIN=$${GOBIN:-$$(go env GOPATH)/bin}; \
+	cp bin/${BINARY_NAME} "$$GOBIN/${BINARY_NAME}" && \
+	echo "Installed $$GOBIN/${BINARY_NAME}"
 
 ## help: display this help message
 help:
