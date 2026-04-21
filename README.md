@@ -40,15 +40,6 @@ Metarc is **experimental, but already usable**.
 
 ---
 
-> [!NOTE]
-> Early speed comparisons against `tar + gzip` overstated Metarc’s advantage: most of the gap came from using `zstd`, not from Metarc’s architecture alone.
->
-> A fairer comparison against `tar + zstd` shows that Metarc is not yet competitive with an optimized tar-based pipeline.
->
-> Its value today is different: Metarc is already a usable playground for exploring metacompression ideas, structural transforms, and cross-file compression strategies.
-
----
-
 ## Why Metarc exists
 
 Metarc is not (yet) trying to replace `tar`.
@@ -64,7 +55,21 @@ Think of it as a **playground for compression ideas**, not a finished product.
 
 ---
 
-## Benchmarks
+## Performances
+
+### Compression
+
+Metarc compression shines in directory with a lot of redundancy where it's file dedup outperforms even tar + zstd :
+
+```Bash
+6.5G	code_perso
+1.4G	code_perso.marc
+1.8G	code_perso.tar.zst
+```
+
+But the goal is to make it at least "as good" in most common cases, that's why we mainly use standard high-profile repo to measure our progress in this area.
+
+Previous experiments used tar + gzip
 
 | Repo | Original size | Files | tgz compression | tgz size | metarc compression | metarc size | % size of tgz |
 |------|---------------|-------|-----------------|----------|-------------------|-------------|----------------|
@@ -77,7 +82,17 @@ Think of it as a **playground for compression ideas**, not a finished product.
 | express | 1.6M | 242 | 0m0.129s | 356K | 0m0.028s | 356K | 100.4% |
 | react | 65M | 6888 | 0m3.612s | 21M | 0m0.633s | 18M | 92.8% |
 
-Results vary depending on dataset size and redundancy patterns.
+But we're migrating our benchmarks to tar + zstd for a fairer comparison.
+(Expect new results soon)
+
+### Speed
+
+> [!NOTE]
+> Early speed comparisons against `tar + gzip` overstated Metarc’s advantage: most of the gap came from using `zstd`, not from Metarc’s architecture alone.
+>
+> A fairer comparison against `tar + zstd` shows that Metarc is not yet competitive with an optimized tar-based pipeline.
+>
+> Its value today is different: Metarc is already a usable playground for exploring metacompression ideas, structural transforms, and cross-file compression strategies.
 
 ---
 
@@ -97,8 +112,6 @@ This installs `marc` to your `$GOBIN` (or `$GOPATH/bin`).
 ```bash
 make test
 ```
-
----
 
 ### Create an archive
 
