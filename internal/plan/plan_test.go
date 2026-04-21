@@ -48,14 +48,14 @@ func TestDecide(t *testing.T) {
 	facts := marc.Facts{Size: 1024}
 
 	tests := []struct {
-		name           string
-		registry       []marc.Transform
-		wantTransform  bool   // true = non-nil transform returned
-		wantApplied    bool
+		name            string
+		registry        []marc.Transform
+		wantTransform   bool // true = non-nil transform returned
+		wantApplied     bool
 		wantTransformID string
-		wantReason     string
-		wantGain       int64
-		wantCPU        int64
+		wantReason      string
+		wantGain        int64
+		wantCPU         int64
 	}{
 		{
 			name: "applicable and gain > cpu returns transform applied=true",

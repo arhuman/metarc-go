@@ -18,12 +18,12 @@ import (
 // Reader reads entries and blobs from an existing .marc archive.
 type Reader struct {
 	db             *sql.DB
-	arcFile        *os.File // the single .marc file (nil for split-file)
-	blobFile       *os.File // legacy split-file blob sidecar (nil for single-file)
-	dbTmp          string   // temp file for extracted catalog (single-file only)
-	format         string   // "single-file" or "split-file"
-	dictData       []byte   // shared zstd dictionary (nil if not present)
-	hasSolidBlocks bool     // true if blobs table has block_id column
+	arcFile        *os.File         // the single .marc file (nil for split-file)
+	blobFile       *os.File         // legacy split-file blob sidecar (nil for single-file)
+	dbTmp          string           // temp file for extracted catalog (single-file only)
+	format         string           // "single-file" or "split-file"
+	dictData       []byte           // shared zstd dictionary (nil if not present)
+	hasSolidBlocks bool             // true if blobs table has block_id column
 	solidCache     map[int64][]byte // offset -> decompressed solid block data
 	solidCacheKeys []int64          // insertion order for LRU eviction
 }
@@ -472,11 +472,11 @@ func (r *Reader) QueryPlanLog() ([]PlanLogStat, error) {
 
 // Overview holds high-level statistics about an archive's content.
 type Overview struct {
-	EntryCount    int64
-	BlobCount     int64
-	OriginalSize  int64 // sum of entries.size (total source size before archiving)
-	TotalUlen     int64 // sum of blobs.ulen (unique blob bytes, after dedup)
-	TotalClen     int64 // sum of blobs.clen (compressed blob bytes)
+	EntryCount   int64
+	BlobCount    int64
+	OriginalSize int64 // sum of entries.size (total source size before archiving)
+	TotalUlen    int64 // sum of blobs.ulen (unique blob bytes, after dedup)
+	TotalClen    int64 // sum of blobs.clen (compressed blob bytes)
 }
 
 // QueryOverview returns aggregate entry/blob counts and sizes from the catalog.

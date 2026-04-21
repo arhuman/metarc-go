@@ -12,12 +12,12 @@ import (
 
 type fakeFileInfo struct{ size int64 }
 
-func (f fakeFileInfo) Name() string        { return "fake" }
-func (f fakeFileInfo) Size() int64         { return f.size }
-func (f fakeFileInfo) Mode() fs.FileMode   { return 0o644 }
-func (f fakeFileInfo) ModTime() time.Time  { return time.Time{} }
-func (f fakeFileInfo) IsDir() bool         { return false }
-func (f fakeFileInfo) Sys() any            { return nil }
+func (f fakeFileInfo) Name() string       { return "fake" }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) Mode() fs.FileMode  { return 0o644 }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 func TestNearDupDelta_gainGate(t *testing.T) {
 	// The near-dup-delta transform requires a benchmark showing >10% additional

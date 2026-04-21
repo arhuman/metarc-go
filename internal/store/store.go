@@ -9,9 +9,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 
@@ -28,25 +28,25 @@ import (
 // Layout: [Magic 8B][Blob chunks...][Catalog chunk][Footer 24B]
 // The catalog is an in-memory SQLite DB serialized at Close time.
 type Writer struct {
-	outFile    *os.File
-	db         *sql.DB
-	dbPath     string // temp file path for in-memory catalog
-	tx         *sql.Tx
-	blobOff    int64 // current write position in the output file
-	entryN     int64 // entries written in current tx batch
-	nameCache  map[string]int64
-	parentMap  map[string]int64
-	compressor string // "zstd" or "none"
-	zstdEnc    *zstd.Encoder
-	dictEnc    *zstd.Encoder  // encoder with dictionary (reused across blobs)
-	dictData   []byte         // trained zstd dictionary (nil if not using dict compression)
-	dictSimple bool           // online dict training mode
-	dictSamples [][]byte      // buffered samples for online training
-	dictSampleBytes int64     // total bytes buffered so far
-	dictTrained bool          // true once online training completed (or failed)
-	fileHasher *blake3.Hasher // running hash of all bytes written so far
-	solidAcc   *solidAccumulator // non-nil when solid block compression is enabled
-	solidSize  int64              // solid block size threshold (0 = disabled)
+	outFile         *os.File
+	db              *sql.DB
+	dbPath          string // temp file path for in-memory catalog
+	tx              *sql.Tx
+	blobOff         int64 // current write position in the output file
+	entryN          int64 // entries written in current tx batch
+	nameCache       map[string]int64
+	parentMap       map[string]int64
+	compressor      string // "zstd" or "none"
+	zstdEnc         *zstd.Encoder
+	dictEnc         *zstd.Encoder     // encoder with dictionary (reused across blobs)
+	dictData        []byte            // trained zstd dictionary (nil if not using dict compression)
+	dictSimple      bool              // online dict training mode
+	dictSamples     [][]byte          // buffered samples for online training
+	dictSampleBytes int64             // total bytes buffered so far
+	dictTrained     bool              // true once online training completed (or failed)
+	fileHasher      *blake3.Hasher    // running hash of all bytes written so far
+	solidAcc        *solidAccumulator // non-nil when solid block compression is enabled
+	solidSize       int64             // solid block size threshold (0 = disabled)
 }
 
 const batchSize = 1000

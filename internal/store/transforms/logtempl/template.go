@@ -19,7 +19,7 @@ const templateID marc.TransformID = "log-template/v1"
 
 // Size limits for applicability.
 const (
-	minSize = 1024          // 1 KB
+	minSize = 1024             // 1 KB
 	maxSize = 50 * 1024 * 1024 // 50 MB
 )
 

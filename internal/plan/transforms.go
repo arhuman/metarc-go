@@ -14,6 +14,6 @@ func init() {
 	// content alongside the canonical form.
 	Registry = []marc.Transform{
 		goline.NewGoLineSubst(), // line substitution for .go files (lossless)
-		transforms.NewDedup(),    // content-addressable dedup (lossless)
+		transforms.NewDedup(),   // content-addressable dedup (lossless)
 	}
 }

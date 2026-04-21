@@ -19,12 +19,12 @@ type fakeFileInfo struct {
 	size int64
 }
 
-func (f fakeFileInfo) Name() string        { return f.name }
-func (f fakeFileInfo) Size() int64         { return f.size }
-func (f fakeFileInfo) Mode() fs.FileMode   { return 0o644 }
-func (f fakeFileInfo) ModTime() time.Time  { return time.Time{} }
-func (f fakeFileInfo) IsDir() bool         { return false }
-func (f fakeFileInfo) Sys() any            { return nil }
+func (f fakeFileInfo) Name() string       { return f.name }
+func (f fakeFileInfo) Size() int64        { return f.size }
+func (f fakeFileInfo) Mode() fs.FileMode  { return 0o644 }
+func (f fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (f fakeFileInfo) IsDir() bool        { return false }
+func (f fakeFileInfo) Sys() any           { return nil }
 
 func makeEntry(relPath string, size int64) marc.Entry {
 	return marc.Entry{
