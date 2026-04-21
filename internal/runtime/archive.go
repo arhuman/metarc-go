@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sync"
 
+	"github.com/arhuman/metarc-go/internal/plan"
 	"github.com/arhuman/metarc-go/internal/scan"
 	"github.com/arhuman/metarc-go/internal/store"
 	"github.com/arhuman/metarc-go/pkg/marc"
@@ -34,9 +35,10 @@ const (
 
 // ArchiveOpts holds optional settings for Archive.
 type ArchiveOpts struct {
-	DictCompress   string // "", "prescan", or "simple"
-	Workers        int    // 0 = runtime.NumCPU()
-	SolidBlockSize int64  // 0 = disabled; >0 = solid mode with this threshold in bytes
+	DictCompress        string   // "", "prescan", or "simple"
+	Workers             int      // 0 = runtime.NumCPU()
+	SolidBlockSize      int64    // 0 = disabled; >0 = solid mode with this threshold in bytes
+	DisabledTransforms  []string // transform IDs to skip (e.g. "go-line-subst/v1")
 }
 
 // DefaultSolidBlockSize is the default solid block threshold (4 MB).
@@ -96,6 +98,12 @@ func ArchiveMultiWithOpts(ctx context.Context, marcPath string, roots []string, 
 // each source is prefixed with its basename and surfaces as a top-level
 // directory in the archive.
 func archiveWithSources(ctx context.Context, marcPath string, roots []string, compressor string, keepPlanLog bool, aopts ArchiveOpts, multi bool) error {
+	// Apply disabled transforms before archiving.
+	plan.Disabled = make(map[string]bool, len(aopts.DisabledTransforms))
+	for _, id := range aopts.DisabledTransforms {
+		plan.Disabled[id] = true
+	}
+
 	numWorkers := runtime.NumCPU()
 	if aopts.Workers > 0 {
 		numWorkers = aopts.Workers

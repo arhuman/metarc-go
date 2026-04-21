@@ -28,6 +28,7 @@ func newArchiveCmd() *cobra.Command {
 	var dictCompress string
 	var noSolid bool
 	var solidBlockSize string
+	var disableTransforms []string
 
 	cmd := &cobra.Command{
 		Use:   "archive <output.marc> <source-dir> [source-dir...]",
@@ -49,8 +50,9 @@ siblings under the destination. Two sources may not share the same basename.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keep := keepPlanLog || explain
 			opts := runtime.ArchiveOpts{
-				DictCompress: dictCompress,
-				Workers:      workers,
+				DictCompress:       dictCompress,
+				Workers:            workers,
+				DisabledTransforms: disableTransforms,
 			}
 			if !noSolid {
 				size, err := parseByteSize(solidBlockSize)
@@ -86,6 +88,7 @@ siblings under the destination. Two sources may not share the same basename.`,
 	cmd.Flags().StringVar(&dictCompress, "dict-compress", "", `dictionary compression mode: "prescan" (walk tree first) or "simple" (train mid-stream)`)
 	cmd.Flags().BoolVar(&noSolid, "no-solid", false, "disable solid block compression (use per-blob compression)")
 	cmd.Flags().StringVar(&solidBlockSize, "solid-block-size", "4MB", "solid block size threshold")
+	cmd.Flags().StringSliceVar(&disableTransforms, "disable-transform", nil, `transform IDs to skip (e.g. "go-line-subst/v1")`)
 
 	return cmd
 }

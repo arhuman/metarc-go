@@ -13,6 +13,10 @@ import (
 // Registry is the ordered list of transforms. First applicable transform wins.
 var Registry []marc.Transform
 
+// Disabled is the set of transform IDs to skip during planning.
+// Set before archiving; keyed by TransformID string.
+var Disabled = map[string]bool{}
+
 // Decision records the planner's reasoning for a single entry.
 type Decision struct {
 	TransformID   string // "" = raw (no transform applied)
@@ -34,6 +38,9 @@ func RegistryIDs() string {
 // Decide returns the chosen transform (or nil) and a Decision record for logging.
 func Decide(ctx context.Context, e marc.Entry, facts marc.Facts) (marc.Transform, Decision) {
 	for _, t := range Registry {
+		if Disabled[string(t.ID())] {
+			continue
+		}
 		if t.Applicable(ctx, e, facts) {
 			gain, cpu := t.CostEstimate(e, facts)
 			id := string(t.ID())
