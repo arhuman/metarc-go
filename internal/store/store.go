@@ -339,17 +339,20 @@ func (w *Writer) writeFile(ctx context.Context, e marc.Entry, nameID, parentID i
 }
 
 // writeFileWithSHA writes a file entry, optionally using a pre-computed BLAKE3 hash.
-// If sha is zero, the hash is computed during blob writing (original behavior).
+// It iterates the transform registry, calling Apply on each applicable transform
+// until one returns handled=true. If none handles it, the file is written raw.
 func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, parentID int64, mode uint32, mtimeNs int64, uid, gid uint32, sha [32]byte) error {
 	sink := &blobSink{
-		w:        w,
-		compress: w.compressor,
-		zstdEnc:  w.zstdEnc,
-		dictEnc:  w.dictEnc,
+		w:         w,
+		compress:  w.compressor,
+		zstdEnc:   w.zstdEnc,
+		dictEnc:   w.dictEnc,
+		sourceSHA: sha,
 	}
 
-	facts := marc.Facts{Size: e.Info.Size()}
-	t, decision := plan.Decide(ctx, e, facts)
+	zeroSHA := [32]byte{}
+	hasSHA := sha != zeroSHA
+	facts := marc.Facts{Size: e.Info.Size(), SHA: sha}
 
 	// Open the source file.
 	f, err := os.Open(e.Path)
@@ -361,39 +364,57 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 	var transformID string
 	var blobIDs []marc.BlobID
 	var params []byte
+	var handled bool
+	var decision plan.Decision
 
-	zeroSHA := [32]byte{}
-	hasSHA := sha != zeroSHA
-
-	if t != nil {
-		result, applyErr := t.Apply(ctx, e, f, sink)
-		if errors.Is(applyErr, marc.ErrNotApplicable) {
-			// Fall back: seek file to start, write via raw sink.
-			if _, err := f.Seek(0, io.SeekStart); err != nil {
-				return fmt.Errorf("store: seek %s: %w", e.Path, err)
+	for _, t := range plan.Registry {
+		if plan.Disabled[string(t.ID())] {
+			continue
+		}
+		if !t.Applicable(ctx, e, facts) {
+			continue
+		}
+		gain, cpu := t.CostEstimate(e, facts)
+		id := string(t.ID())
+		if gain <= cpu {
+			decision = plan.Decision{
+				TransformID:   id,
+				EstimatedGain: gain,
+				EstimatedCPU:  cpu,
+				Applied:       false,
+				Reason:        fmt.Sprintf("gain (%d) <= cpu cost (%d), skipped", gain, cpu),
 			}
-			var id marc.BlobID
-			if hasSHA {
-				id, err = sink.WriteWithSHA(ctx, f, sha)
-			} else {
-				id, err = sink.Write(ctx, f)
-			}
-			if err != nil {
-				return fmt.Errorf("store: fallback write %s: %w", e.Path, err)
-			}
-			blobIDs = []marc.BlobID{id}
-			decision.TransformID = ""
-			decision.Applied = false
-			decision.Reason = fmt.Sprintf("%s: content not recognized, fell back to raw", t.ID())
-		} else if applyErr != nil {
+			continue
+		}
+		result, ok, applyErr := t.Apply(ctx, e, facts, f, sink)
+		if applyErr != nil {
 			return fmt.Errorf("store: apply transform %s to %s: %w", t.ID(), e.Path, applyErr)
-		} else {
-			transformID = string(t.ID())
+		}
+		if ok {
+			transformID = id
 			blobIDs = result.BlobIDs
 			params = result.Params
+			handled = true
+			decision = plan.Decision{
+				TransformID:   id,
+				EstimatedGain: gain,
+				EstimatedCPU:  cpu,
+				Applied:       true,
+				Reason:        fmt.Sprintf("%s selected", id),
+			}
+			break
 		}
-	} else {
-		// No transform -- write raw blob via sink (use pre-computed SHA if available).
+		// Not handled -- reset file position for next transform.
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("store: seek %s: %w", e.Path, err)
+		}
+	}
+
+	if !handled {
+		// No transform handled it -- write raw.
+		if decision.Reason == "" {
+			decision = plan.Decision{Reason: "no applicable transform"}
+		}
 		var id marc.BlobID
 		if hasSHA {
 			id, err = sink.WriteWithSHA(ctx, f, sha)
@@ -575,6 +596,16 @@ func (w *Writer) finalize() error {
 		if _, err := w.db.Exec(`INSERT OR REPLACE INTO meta (key, value) VALUES ('dict', ?)`, encoded); err != nil {
 			return fmt.Errorf("store dict in meta: %w", err)
 		}
+	}
+
+	// Drop source_sha — it was only needed during archiving for pre-transform dedup.
+	// The final archive only needs sha (blob content hash) for integrity.
+	// Index must be dropped before the column.
+	if _, err := w.db.Exec(`DROP INDEX IF EXISTS idx_blobs_source_sha`); err != nil {
+		return fmt.Errorf("drop source_sha index: %w", err)
+	}
+	if _, err := w.db.Exec(`ALTER TABLE blobs DROP COLUMN source_sha`); err != nil {
+		return fmt.Errorf("drop source_sha: %w", err)
 	}
 
 	// VACUUM INTO a clean copy to serialize the catalog.

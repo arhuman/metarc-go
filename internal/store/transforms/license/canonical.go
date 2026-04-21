@@ -88,11 +88,11 @@ type params struct {
 // Apply reads the full file content, normalizes it, and looks up its BLAKE3
 // fingerprint against known license texts. If found, it writes the canonical
 // text to the sink and returns a result with the SPDX identifier. If not found,
-// it returns marc.ErrNotApplicable.
-func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink marc.BlobSink) (marc.Result, error) {
+// it returns handled=false.
+func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
 	data, err := io.ReadAll(src)
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("license-canonical: read: %w", err)
+		return marc.Result{}, false, fmt.Errorf("license-canonical: read: %w", err)
 	}
 
 	norm := normalize(string(data))
@@ -100,25 +100,25 @@ func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink
 
 	entry, ok := fingerprints[h]
 	if !ok {
-		return marc.Result{}, marc.ErrNotApplicable
+		return marc.Result{}, false, nil
 	}
 
 	// Write canonical (normalized) bytes to the sink.
 	canonicalBytes := []byte(normalize(entry.Text))
 	blobID, err := sink.Write(ctx, bytes.NewReader(canonicalBytes))
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("license-canonical: write blob: %w", err)
+		return marc.Result{}, false, fmt.Errorf("license-canonical: write blob: %w", err)
 	}
 
 	paramsJSON, err := json.Marshal(params{SPDX: entry.SPDX})
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("license-canonical: marshal params: %w", err)
+		return marc.Result{}, false, fmt.Errorf("license-canonical: marshal params: %w", err)
 	}
 
 	return marc.Result{
 		BlobIDs: []marc.BlobID{blobID},
 		Params:  paramsJSON,
-	}, nil
+	}, true, nil
 }
 
 // Reverse opens the blob referenced by r and copies it to dst.

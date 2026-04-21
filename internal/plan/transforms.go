@@ -13,7 +13,7 @@ func init() {
 	// original bytes. They must remain opt-in until they store the original
 	// content alongside the canonical form.
 	Registry = []marc.Transform{
+		transforms.NewDedup(),   // content-addressable dedup (lossless) -- must be first
 		goline.NewGoLineSubst(), // line substitution for .go files (lossless)
-		transforms.NewDedup(),   // content-addressable dedup (lossless)
 	}
 }

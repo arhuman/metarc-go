@@ -1,6 +1,6 @@
 // Package delta implements the near-dup-delta/v1 transform stub.
 // This transform is gated behind a benchmark showing >10% gain over dedup alone.
-// Currently returns ErrNotApplicable for all inputs.
+// Currently returns handled=false for all inputs.
 package delta
 
 import (
@@ -13,7 +13,7 @@ import (
 const nearDupID marc.TransformID = "near-dup-delta/v1"
 
 // NearDup is a stub for the near-dup-delta/v1 transform.
-// It always returns ErrNotApplicable until the benchmark gate passes.
+// It always returns handled=false until the benchmark gate passes.
 type NearDup struct{}
 
 // NewNearDup returns a new near-dup-delta transform stub.
@@ -32,9 +32,9 @@ func (n *NearDup) CostEstimate(_ marc.Entry, _ marc.Facts) (gainBytes, cpuUnits 
 	return 0, 0
 }
 
-// Apply always returns ErrNotApplicable (stub).
-func (n *NearDup) Apply(_ context.Context, _ marc.Entry, _ io.Reader, _ marc.BlobSink) (marc.Result, error) {
-	return marc.Result{}, marc.ErrNotApplicable
+// Apply always returns handled=false (stub).
+func (n *NearDup) Apply(_ context.Context, _ marc.Entry, _ marc.Facts, _ io.Reader, _ marc.BlobSink) (marc.Result, bool, error) {
+	return marc.Result{}, false, nil
 }
 
 // Reverse is a no-op (stub).

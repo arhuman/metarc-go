@@ -107,9 +107,13 @@ func TestApply_valid(t *testing.T) {
   "description": "A metacompression tool"
 }`
 	e := makeEntry("package.json", int64(len(pretty)))
-	result, err := c.Apply(ctx, e, strings.NewReader(pretty), sink)
+	facts := marc.Facts{Size: int64(len(pretty))}
+	result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(pretty), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 	if len(result.BlobIDs) != 1 {
 		t.Fatalf("expected 1 blob, got %d", len(result.BlobIDs))
@@ -134,9 +138,13 @@ func TestApply_sortkeys(t *testing.T) {
 
 	input := `{"b":1,"a":2}`
 	e := makeEntry("data.json", int64(len(input)))
-	result, err := c.Apply(ctx, e, strings.NewReader(input), sink)
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(input), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 
 	canonical := string(sink.blobs[result.BlobIDs[0]])
@@ -152,9 +160,13 @@ func TestApply_invalid(t *testing.T) {
 	sink := newFakeSink()
 
 	e := makeEntry("bad.json", 8)
-	_, err := c.Apply(ctx, e, strings.NewReader("not json"), sink)
-	if !errors.Is(err, marc.ErrNotApplicable) {
-		t.Fatalf("expected ErrNotApplicable, got %v", err)
+	facts := marc.Facts{Size: 8}
+	_, handled, err := c.Apply(ctx, e, facts, strings.NewReader("not json"), sink)
+	if err != nil {
+		t.Fatalf("Apply: unexpected error %v", err)
+	}
+	if handled {
+		t.Fatal("expected handled=false for invalid JSON")
 	}
 }
 
@@ -165,9 +177,13 @@ func TestRoundTrip(t *testing.T) {
 
 	input := `{"z": 1, "a": [1, 2, 3], "m": {"nested": true}}`
 	e := makeEntry("test.json", int64(len(input)))
-	result, err := c.Apply(ctx, e, strings.NewReader(input), sink)
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(input), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 
 	blobs := &fakeBlobs{blobs: sink.blobs}

@@ -4,14 +4,8 @@ package marc
 
 import (
 	"context"
-	"errors"
 	"io"
 )
-
-// ErrNotApplicable is returned by Transform.Apply when content does not match
-// despite Applicable() returning true (e.g. license filename but unrecognized text).
-// The store falls back to the next transform or raw storage.
-var ErrNotApplicable = errors.New("transform: content does not match, skip")
 
 // TransformID is a stable string identifier. New breaking version = new ID.
 // Example: "dedup/v1" -> "dedup/v2" for a breaking change.
@@ -20,6 +14,7 @@ type TransformID string
 // Facts holds catalog facts about an entry available to the planner without I/O.
 type Facts struct {
 	Size int64
+	SHA  [32]byte // pre-computed BLAKE3-256 hash (zero if not available)
 }
 
 // Result is returned by Transform.Apply.
@@ -56,7 +51,8 @@ type Transform interface {
 	CostEstimate(e Entry, facts Facts) (gainBytes, cpuUnits int64)
 
 	// Apply reads src, writes blobs through sink, returns a Result.
-	Apply(ctx context.Context, e Entry, src io.Reader, sink BlobSink) (Result, error)
+	// The bool return means "handled": true = halt chain, false = pass to next transform.
+	Apply(ctx context.Context, e Entry, facts Facts, src io.Reader, sink BlobSink) (Result, bool, error)
 
 	// Reverse reconstructs original bytes from Result + blob access.
 	Reverse(ctx context.Context, r Result, blobs BlobReader, dst io.Writer) error

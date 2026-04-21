@@ -69,10 +69,11 @@ type templateParams struct {
 }
 
 // Apply reads the log content, finds a common prefix, and stores suffixes.
-func (t *Template) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink marc.BlobSink) (marc.Result, error) {
+// Returns handled=false if the content is not suitable for template extraction.
+func (t *Template) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
 	data, err := io.ReadAll(src)
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("log-template: read: %w", err)
+		return marc.Result{}, false, fmt.Errorf("log-template: read: %w", err)
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -82,13 +83,13 @@ func (t *Template) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink 
 	}
 
 	if len(lines) < 10 {
-		return marc.Result{}, marc.ErrNotApplicable
+		return marc.Result{}, false, nil
 	}
 
 	// Find the longest common prefix shared by >50% of lines.
 	prefix := findCommonPrefix(lines)
 	if prefix == "" {
-		return marc.Result{}, marc.ErrNotApplicable
+		return marc.Result{}, false, nil
 	}
 
 	// Count how many lines share this prefix.
@@ -100,7 +101,7 @@ func (t *Template) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink 
 	}
 
 	if float64(matchCount)/float64(len(lines)) < 0.5 {
-		return marc.Result{}, marc.ErrNotApplicable
+		return marc.Result{}, false, nil
 	}
 
 	// Build suffixes: strip the prefix from matching lines, keep non-matching lines with a marker.
@@ -117,18 +118,18 @@ func (t *Template) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink 
 	suffixData := strings.Join(suffixes, "\n")
 	id, err := sink.Write(ctx, bytes.NewReader([]byte(suffixData)))
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("log-template: write blob: %w", err)
+		return marc.Result{}, false, fmt.Errorf("log-template: write blob: %w", err)
 	}
 
 	params, err := json.Marshal(templateParams{Tmpl: prefix, Count: len(lines)})
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("log-template: marshal params: %w", err)
+		return marc.Result{}, false, fmt.Errorf("log-template: marshal params: %w", err)
 	}
 
 	return marc.Result{
 		BlobIDs: []marc.BlobID{id},
 		Params:  params,
-	}, nil
+	}, true, nil
 }
 
 // Reverse reconstructs the original log content by prepending the template to each suffix.

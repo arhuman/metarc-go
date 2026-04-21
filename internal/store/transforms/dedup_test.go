@@ -112,41 +112,93 @@ func TestDedup_CostEstimate(t *testing.T) {
 	}
 }
 
-func TestDedup_Apply(t *testing.T) {
+func TestDedup_Apply_noSHA(t *testing.T) {
 	d := NewDedup()
 	ctx := context.Background()
 	sink := newFakeSink()
 
 	content := []byte("dedup apply test content")
 	e := fakeEntry(int64(len(content)))
+	facts := marc.Facts{Size: int64(len(content))}
 
-	result, err := d.Apply(ctx, e, bytes.NewReader(content), sink)
+	result, handled, err := d.Apply(ctx, e, facts, bytes.NewReader(content), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if len(result.BlobIDs) != 1 {
-		t.Fatalf("expected 1 BlobID, got %d", len(result.BlobIDs))
+	if handled {
+		t.Fatal("expected handled=false when SHA is zero")
 	}
-	if result.BlobIDs[0] == 0 {
-		t.Fatal("BlobID is zero")
+	if len(result.BlobIDs) != 0 {
+		t.Fatalf("expected 0 BlobIDs, got %d", len(result.BlobIDs))
 	}
+}
+
+func TestDedup_Apply_withSHA_hit(t *testing.T) {
+	d := NewDedup()
+	ctx := context.Background()
+
+	// Pre-populate the sink with a known SHA -> BlobID mapping.
+	sha := [32]byte{1, 2, 3}
+	sink := &dedupFakeSink{reuseMap: map[[32]byte]marc.BlobID{sha: 42}}
+
+	e := fakeEntry(100)
+	facts := marc.Facts{Size: 100, SHA: sha}
+
+	result, handled, err := d.Apply(ctx, e, facts, nil, sink)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true on dedup hit")
+	}
+	if len(result.BlobIDs) != 1 || result.BlobIDs[0] != 42 {
+		t.Fatalf("expected BlobID 42, got %v", result.BlobIDs)
+	}
+}
+
+func TestDedup_Apply_withSHA_miss(t *testing.T) {
+	d := NewDedup()
+	ctx := context.Background()
+
+	sha := [32]byte{1, 2, 3}
+	sink := &dedupFakeSink{reuseMap: map[[32]byte]marc.BlobID{}}
+
+	e := fakeEntry(100)
+	facts := marc.Facts{Size: 100, SHA: sha}
+
+	_, handled, err := d.Apply(ctx, e, facts, nil, sink)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if handled {
+		t.Fatal("expected handled=false on dedup miss")
+	}
+}
+
+// dedupFakeSink is a BlobSink that supports Reuse lookups.
+type dedupFakeSink struct {
+	reuseMap map[[32]byte]marc.BlobID
+}
+
+func (s *dedupFakeSink) Write(_ context.Context, _ io.Reader) (marc.BlobID, error) {
+	return 0, nil
+}
+
+func (s *dedupFakeSink) Reuse(sha [32]byte) (marc.BlobID, bool) {
+	id, ok := s.reuseMap[sha]
+	return id, ok
 }
 
 func TestDedup_Reverse(t *testing.T) {
 	d := NewDedup()
 	ctx := context.Background()
-	sink := newFakeSink()
 
+	// Manually set up a blob for Reverse to read (Apply no longer writes blobs).
 	content := []byte("dedup reverse test content")
-	e := fakeEntry(int64(len(content)))
+	blobStore := map[marc.BlobID][]byte{1: content}
+	result := marc.Result{BlobIDs: []marc.BlobID{1}}
 
-	// Apply first to get the blob ID.
-	result, err := d.Apply(ctx, e, bytes.NewReader(content), sink)
-	if err != nil {
-		t.Fatalf("Apply: %v", err)
-	}
-
-	blobs := &fakeBlobs{blobs: sink.blobs}
+	blobs := &fakeBlobs{blobs: blobStore}
 	var out bytes.Buffer
 	if err := d.Reverse(ctx, result, blobs, &out); err != nil {
 		t.Fatalf("Reverse: %v", err)

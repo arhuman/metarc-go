@@ -27,7 +27,7 @@ type pendingBlob struct {
 
 // addBlob appends raw blob data to the current solid block. If the block would
 // exceed maxBlockSize, it is flushed first. Returns the new blob's BlobID.
-func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte) (marc.BlobID, error) {
+func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byte) (marc.BlobID, error) {
 	dataLen := int64(len(data))
 
 	// Flush current block if adding this blob would exceed the limit.
@@ -43,9 +43,14 @@ func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte) (marc.BlobID, err
 		sa.buf = append(sa.buf, data...)
 		// Insert blob row, then flush immediately as a single-blob block.
 		blockOffset := int64(0)
+		var sourceSHAParam any
+		zeroSHA := [32]byte{}
+		if sourceSHA != zeroSHA {
+			sourceSHAParam = sourceSHA[:]
+		}
 		res, err := sa.w.tx.Exec(
-			`INSERT INTO blobs (sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			sha[:], int64(-1), int64(0), dataLen, marc.CompressSolid, sa.blockCounter, blockOffset,
+			`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			sha[:], sourceSHAParam, int64(-1), int64(0), dataLen, marc.CompressSolid, sa.blockCounter, blockOffset,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("solidAccumulator.addBlob: insert oversized blob: %w", err)
@@ -66,9 +71,14 @@ func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte) (marc.BlobID, err
 	sa.buf = append(sa.buf, data...)
 
 	// Insert blob row with placeholder offset/clen; will be updated on flush.
+	var sourceSHAParam2 any
+	zeroSHA2 := [32]byte{}
+	if sourceSHA != zeroSHA2 {
+		sourceSHAParam2 = sourceSHA[:]
+	}
 	res, err := sa.w.tx.Exec(
-		`INSERT INTO blobs (sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sha[:], int64(-1), int64(0), dataLen, marc.CompressSolid, sa.blockCounter, blockOffset,
+		`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sha[:], sourceSHAParam2, int64(-1), int64(0), dataLen, marc.CompressSolid, sa.blockCounter, blockOffset,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("solidAccumulator.addBlob: insert blob: %w", err)

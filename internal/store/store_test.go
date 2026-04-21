@@ -301,13 +301,14 @@ func TestPlanLog_written(t *testing.T) {
 		t.Fatalf("expected 3 plan_log rows, got %d", n)
 	}
 
-	// Verify rows have expected fields.
+	// With transform chaining, plain text files are written raw (no transform
+	// handles them), so applied=0 for all entries.
 	var applied int
 	if err := r.db.QueryRow(`SELECT COUNT(*) FROM plan_log WHERE applied = 1`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if applied != 3 {
-		t.Fatalf("expected 3 applied plan_log rows, got %d", applied)
+	if applied != 0 {
+		t.Fatalf("expected 0 applied plan_log rows (plain text files), got %d", applied)
 	}
 }
 

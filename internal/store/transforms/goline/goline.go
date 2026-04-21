@@ -181,7 +181,8 @@ func (g *GoLineSubst) CostEstimate(_ marc.Entry, facts marc.Facts) (gainBytes, c
 
 // Apply reads src line-by-line, replacing dictionary-matched lines with
 // 2-byte tokens (\x00 + index). The result is written as a single blob.
-func (g *GoLineSubst) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink marc.BlobSink) (marc.Result, error) {
+// Returns handled=false if the content contains NUL bytes.
+func (g *GoLineSubst) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
 	reader := bufio.NewReaderSize(src, 64*1024)
 	var buf bytes.Buffer
 
@@ -190,7 +191,7 @@ func (g *GoLineSubst) Apply(ctx context.Context, _ marc.Entry, src io.Reader, si
 		if len(line) > 0 {
 			// NUL safety: if any line contains \x00, bail out.
 			if strings.ContainsRune(line, 0x00) {
-				return marc.Result{}, marc.ErrNotApplicable
+				return marc.Result{}, false, nil
 			}
 
 			// Separate the trailing \n if present.
@@ -219,16 +220,16 @@ func (g *GoLineSubst) Apply(ctx context.Context, _ marc.Entry, src io.Reader, si
 			break
 		}
 		if err != nil {
-			return marc.Result{}, fmt.Errorf("go-line-subst: read: %w", err)
+			return marc.Result{}, false, fmt.Errorf("go-line-subst: read: %w", err)
 		}
 	}
 
 	id, err := sink.Write(ctx, bytes.NewReader(buf.Bytes()))
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("go-line-subst: write blob: %w", err)
+		return marc.Result{}, false, fmt.Errorf("go-line-subst: write blob: %w", err)
 	}
 
-	return marc.Result{BlobIDs: []marc.BlobID{id}}, nil
+	return marc.Result{BlobIDs: []marc.BlobID{id}}, true, nil
 }
 
 // Reverse reconstructs the original .go file from the substituted blob.

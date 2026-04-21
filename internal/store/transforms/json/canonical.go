@@ -43,30 +43,31 @@ func (c *Canonical) CostEstimate(_ marc.Entry, facts marc.Facts) (gainBytes, cpu
 }
 
 // Apply reads the JSON content, re-encodes it canonically, and writes to sink.
-func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink marc.BlobSink) (marc.Result, error) {
+// Returns handled=false if the content is not valid JSON.
+func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
 	data, err := io.ReadAll(src)
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("json-canonical: read: %w", err)
+		return marc.Result{}, false, fmt.Errorf("json-canonical: read: %w", err)
 	}
 
 	// Parse as generic JSON value.
 	var v any
 	if err := json.Unmarshal(data, &v); err != nil {
-		return marc.Result{}, marc.ErrNotApplicable
+		return marc.Result{}, false, nil
 	}
 
 	// Re-encode canonically (sorted keys, no whitespace).
 	canonical, err := json.Marshal(v)
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("json-canonical: marshal: %w", err)
+		return marc.Result{}, false, fmt.Errorf("json-canonical: marshal: %w", err)
 	}
 
 	id, err := sink.Write(ctx, bytes.NewReader(canonical))
 	if err != nil {
-		return marc.Result{}, fmt.Errorf("json-canonical: write blob: %w", err)
+		return marc.Result{}, false, fmt.Errorf("json-canonical: write blob: %w", err)
 	}
 
-	return marc.Result{BlobIDs: []marc.BlobID{id}}, nil
+	return marc.Result{BlobIDs: []marc.BlobID{id}}, true, nil
 }
 
 // Reverse copies the canonical blob to dst. The canonical form IS the stored form.

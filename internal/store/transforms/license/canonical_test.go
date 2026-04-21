@@ -129,9 +129,13 @@ func TestApply_MIT(t *testing.T) {
 	sink := newFakeSink()
 
 	e := makeEntry("LICENSE", int64(len(mitText)))
-	result, err := c.Apply(ctx, e, strings.NewReader(mitText), sink)
+	facts := marc.Facts{Size: int64(len(mitText))}
+	result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(mitText), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true for known license")
 	}
 
 	if len(result.BlobIDs) != 1 {
@@ -153,9 +157,13 @@ func TestApply_unknown(t *testing.T) {
 	sink := newFakeSink()
 
 	e := makeEntry("LICENSE", 100)
-	_, err := c.Apply(ctx, e, strings.NewReader("This is not a real license."), sink)
-	if !errors.Is(err, marc.ErrNotApplicable) {
-		t.Fatalf("expected ErrNotApplicable, got %v", err)
+	facts := marc.Facts{Size: 100}
+	_, handled, err := c.Apply(ctx, e, facts, strings.NewReader("This is not a real license."), sink)
+	if err != nil {
+		t.Fatalf("Apply: unexpected error %v", err)
+	}
+	if handled {
+		t.Fatal("expected handled=false for unknown license")
 	}
 }
 
@@ -165,9 +173,13 @@ func TestRoundTrip_license(t *testing.T) {
 	sink := newFakeSink()
 
 	e := makeEntry("LICENSE", int64(len(mitText)))
-	result, err := c.Apply(ctx, e, strings.NewReader(mitText), sink)
+	facts := marc.Facts{Size: int64(len(mitText))}
+	result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(mitText), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 
 	blobs := &fakeBlobs{blobs: sink.blobs}

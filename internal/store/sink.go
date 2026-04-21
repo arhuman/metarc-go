@@ -18,10 +18,11 @@ import (
 // Each blob is written as a chunk: [Type=0x01 (1B)][Len uint32 BE][payload].
 // The offset stored in the blobs table points to the start of the chunk header.
 type blobSink struct {
-	w        *Writer
-	compress string
-	zstdEnc  *zstd.Encoder
-	dictEnc  *zstd.Encoder // encoder with dictionary (when dict-compress enabled)
+	w         *Writer
+	compress  string
+	zstdEnc   *zstd.Encoder
+	dictEnc   *zstd.Encoder // encoder with dictionary (when dict-compress enabled)
+	sourceSHA [32]byte      // original content SHA for dedup (set by writeFileWithSHA)
 }
 
 // Write computes BLAKE3-256 while streaming, deduplicates, and writes the blob chunk.
@@ -58,7 +59,7 @@ func (s *blobSink) writeData(data []byte, sha [32]byte) (marc.BlobID, error) {
 
 	// Route through solid accumulator when active.
 	if s.w.solidAcc != nil {
-		return s.w.solidAcc.addBlob(data, sha)
+		return s.w.solidAcc.addBlob(data, sha, s.sourceSHA)
 	}
 
 	// Online dict training: collect samples from small blobs.
@@ -111,9 +112,15 @@ func (s *blobSink) writeData(data []byte, sha [32]byte) (marc.BlobID, error) {
 	clen := int64(len(payload))
 
 	// Insert blob row. Offset points to start of chunk header.
+	// source_sha records the original content hash (before transforms) for dedup.
+	var sourceSHAParam any
+	zeroSHA := [32]byte{}
+	if s.sourceSHA != zeroSHA {
+		sourceSHAParam = s.sourceSHA[:]
+	}
 	res, err := s.w.tx.Exec(
-		`INSERT INTO blobs (sha, offset, clen, ulen, compressed) VALUES (?, ?, ?, ?, ?)`,
-		sha[:], chunkOffset, clen, ulen, compressed,
+		`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed) VALUES (?, ?, ?, ?, ?, ?)`,
+		sha[:], sourceSHAParam, chunkOffset, clen, ulen, compressed,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("blobSink.writeData: insert blob: %w", err)
@@ -123,9 +130,17 @@ func (s *blobSink) writeData(data []byte, sha [32]byte) (marc.BlobID, error) {
 }
 
 // Reuse looks up an existing blob by its BLAKE3-256 hash.
+// It checks source_sha first (original content hash, for pre-transform dedup),
+// then falls back to sha (blob content hash).
 func (s *blobSink) Reuse(sha [32]byte) (marc.BlobID, bool) {
 	var id int64
-	err := s.w.tx.QueryRow(`SELECT id FROM blobs WHERE sha = ?`, sha[:]).Scan(&id)
+	// Check source_sha first — catches duplicates before any transform has run.
+	err := s.w.tx.QueryRow(`SELECT id FROM blobs WHERE source_sha = ?`, sha[:]).Scan(&id)
+	if err == nil {
+		return marc.BlobID(id), true
+	}
+	// Fall back to blob content hash.
+	err = s.w.tx.QueryRow(`SELECT id FROM blobs WHERE sha = ?`, sha[:]).Scan(&id)
 	if err != nil {
 		return 0, false
 	}
