@@ -125,9 +125,13 @@ func TestRoundTrip(t *testing.T) {
 	sink := newFakeSink()
 	e := makeEntry("main.go", int64(len(input)))
 
-	result, err := g.Apply(ctx, e, bytes.NewReader([]byte(input)), sink)
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := g.Apply(ctx, e, facts, bytes.NewReader([]byte(input)), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 	if len(result.BlobIDs) != 1 {
 		t.Fatalf("expected 1 BlobID, got %d", len(result.BlobIDs))
@@ -160,9 +164,13 @@ func TestRoundTrip_noMatches(t *testing.T) {
 	sink := newFakeSink()
 	e := makeEntry("foo.go", int64(len(input)))
 
-	result, err := g.Apply(ctx, e, bytes.NewReader([]byte(input)), sink)
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := g.Apply(ctx, e, facts, bytes.NewReader([]byte(input)), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 
 	// Blob should be identical to input (no substitutions).
@@ -191,9 +199,13 @@ func TestRoundTrip_allMatches(t *testing.T) {
 	sink := newFakeSink()
 	e := makeEntry("all.go", int64(len(input)))
 
-	result, err := g.Apply(ctx, e, bytes.NewReader([]byte(input)), sink)
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := g.Apply(ctx, e, facts, bytes.NewReader([]byte(input)), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 
 	// Every line should be substituted.
@@ -213,7 +225,7 @@ func TestRoundTrip_allMatches(t *testing.T) {
 }
 
 func TestNULByte(t *testing.T) {
-	// Content with a NUL byte should trigger ErrNotApplicable.
+	// Content with a NUL byte should return handled=false.
 	input := "package main\n\nvar x = \"hello\x00world\"\n"
 
 	g := NewGoLineSubst()
@@ -221,9 +233,13 @@ func TestNULByte(t *testing.T) {
 	sink := newFakeSink()
 	e := makeEntry("nul.go", int64(len(input)))
 
-	_, err := g.Apply(ctx, e, bytes.NewReader([]byte(input)), sink)
-	if !errors.Is(err, marc.ErrNotApplicable) {
-		t.Errorf("expected ErrNotApplicable, got %v", err)
+	facts := marc.Facts{Size: int64(len(input))}
+	_, handled, err := g.Apply(ctx, e, facts, bytes.NewReader([]byte(input)), sink)
+	if err != nil {
+		t.Fatalf("Apply: unexpected error %v", err)
+	}
+	if handled {
+		t.Error("expected handled=false for content with NUL byte")
 	}
 }
 
@@ -236,9 +252,13 @@ func TestNoTrailingNewline(t *testing.T) {
 	sink := newFakeSink()
 	e := makeEntry("notrail.go", int64(len(input)))
 
-	result, err := g.Apply(ctx, e, bytes.NewReader([]byte(input)), sink)
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := g.Apply(ctx, e, facts, bytes.NewReader([]byte(input)), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 
 	blobs := &fakeBlobs{blobs: sink.blobs}

@@ -141,6 +141,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_parent ON entries(parent_id);
 CREATE TABLE IF NOT EXISTS blobs (
     id           INTEGER PRIMARY KEY,
     sha          BLOB UNIQUE NOT NULL,
+    source_sha   BLOB,
     offset       INTEGER NOT NULL,
     clen         INTEGER NOT NULL,
     ulen         INTEGER NOT NULL,
@@ -148,6 +149,7 @@ CREATE TABLE IF NOT EXISTS blobs (
     block_id     INTEGER,
     block_offset INTEGER
 );
+CREATE INDEX IF NOT EXISTS idx_blobs_source_sha ON blobs(source_sha);
 CREATE TABLE IF NOT EXISTS entry_blobs (
     entry_id INTEGER REFERENCES entries(id),
     seq      INTEGER,

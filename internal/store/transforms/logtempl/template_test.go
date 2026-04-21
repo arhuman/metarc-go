@@ -113,9 +113,13 @@ func TestApply_structured(t *testing.T) {
 	content := strings.Join(lines, "\n") + "\n"
 
 	e := makeEntry("access.log", int64(len(content)))
-	result, err := tmpl.Apply(ctx, e, strings.NewReader(content), sink)
+	facts := marc.Facts{Size: int64(len(content))}
+	result, handled, err := tmpl.Apply(ctx, e, facts, strings.NewReader(content), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 	if len(result.BlobIDs) != 1 {
 		t.Fatalf("expected 1 blob, got %d", len(result.BlobIDs))
@@ -142,9 +146,13 @@ func TestApply_unstructured(t *testing.T) {
 	content := strings.Join(lines, "\n") + "\n"
 
 	e := makeEntry("random.log", int64(len(content)))
-	_, err := tmpl.Apply(ctx, e, strings.NewReader(content), sink)
-	if !errors.Is(err, marc.ErrNotApplicable) {
-		t.Fatalf("expected ErrNotApplicable, got %v", err)
+	facts := marc.Facts{Size: int64(len(content))}
+	_, handled, err := tmpl.Apply(ctx, e, facts, strings.NewReader(content), sink)
+	if err != nil {
+		t.Fatalf("Apply: unexpected error %v", err)
+	}
+	if handled {
+		t.Fatal("expected handled=false for unstructured log")
 	}
 }
 
@@ -161,9 +169,13 @@ func TestRoundTrip(t *testing.T) {
 	content := strings.Join(lines, "\n") + "\n"
 
 	e := makeEntry("server.log", int64(len(content)))
-	result, err := tmpl.Apply(ctx, e, strings.NewReader(content), sink)
+	facts := marc.Facts{Size: int64(len(content))}
+	result, handled, err := tmpl.Apply(ctx, e, facts, strings.NewReader(content), sink)
 	if err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
 	}
 
 	blobs := &fakeBlobs{blobs: sink.blobs}

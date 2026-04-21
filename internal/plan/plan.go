@@ -1,16 +1,15 @@
-// Package plan decides which transform to apply per entry, using a cost/gain
-// heuristic. The planner must be willing to say "do nothing".
+// Package plan holds the transform registry, decision types, and disabled set.
+// The actual chain logic (iterate, apply, fallback) lives in the store package.
 package plan
 
 import (
-	"context"
-	"fmt"
 	"strings"
 
 	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
-// Registry is the ordered list of transforms. First applicable transform wins.
+// Registry is the ordered list of transforms. The store iterates this list
+// and calls Apply on each applicable transform until one returns handled=true.
 var Registry []marc.Transform
 
 // Disabled is the set of transform IDs to skip during planning.
@@ -33,36 +32,4 @@ func RegistryIDs() string {
 		ids[i] = string(t.ID())
 	}
 	return strings.Join(ids, ",")
-}
-
-// Decide returns the chosen transform (or nil) and a Decision record for logging.
-func Decide(ctx context.Context, e marc.Entry, facts marc.Facts) (marc.Transform, Decision) {
-	for _, t := range Registry {
-		if Disabled[string(t.ID())] {
-			continue
-		}
-		if t.Applicable(ctx, e, facts) {
-			gain, cpu := t.CostEstimate(e, facts)
-			id := string(t.ID())
-			if gain > cpu {
-				return t, Decision{
-					TransformID:   id,
-					EstimatedGain: gain,
-					EstimatedCPU:  cpu,
-					Applied:       true,
-					Reason:        fmt.Sprintf("%s selected", id),
-				}
-			}
-			return nil, Decision{
-				TransformID:   id,
-				EstimatedGain: gain,
-				EstimatedCPU:  cpu,
-				Applied:       false,
-				Reason:        fmt.Sprintf("gain (%d) <= cpu cost (%d), skipped", gain, cpu),
-			}
-		}
-	}
-	return nil, Decision{
-		Reason: "no applicable transform",
-	}
 }

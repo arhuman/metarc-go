@@ -109,12 +109,14 @@ func TestQueryPlanLog(t *testing.T) {
 		t.Fatal("expected at least one plan_log stat group")
 	}
 
+	// With transform chaining, plain text files are written raw (no transform
+	// handles them), so total applied should be 0.
 	var totalApplied int64
 	for _, s := range stats {
 		totalApplied += s.Applied
 	}
-	if totalApplied != 4 {
-		t.Errorf("total applied entries: got %d, want 4", totalApplied)
+	if totalApplied != 0 {
+		t.Errorf("total applied entries: got %d, want 0", totalApplied)
 	}
 }
 

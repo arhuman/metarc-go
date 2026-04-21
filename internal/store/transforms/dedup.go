@@ -31,14 +31,17 @@ func (d *Dedup) CostEstimate(e marc.Entry, facts marc.Facts) (gainBytes, cpuUnit
 	return facts.Size, facts.Size / 1024
 }
 
-// Apply streams src into the sink (which handles dedup internally) and returns
-// a single-blob Result.
-func (d *Dedup) Apply(ctx context.Context, _ marc.Entry, src io.Reader, sink marc.BlobSink) (marc.Result, error) {
-	id, err := sink.Write(ctx, src)
-	if err != nil {
-		return marc.Result{}, err
+// Apply tries to dedup via the pre-computed SHA (zero I/O). If no dedup hit,
+// it returns handled=false to let the next transform in the chain try.
+func (d *Dedup) Apply(_ context.Context, _ marc.Entry, facts marc.Facts, _ io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
+	zeroSHA := [32]byte{}
+	if facts.SHA != zeroSHA {
+		if id, ok := sink.Reuse(facts.SHA); ok {
+			return marc.Result{BlobIDs: []marc.BlobID{id}}, true, nil
+		}
 	}
-	return marc.Result{BlobIDs: []marc.BlobID{id}}, nil
+	// Not a duplicate -- don't handle, let the next transform try.
+	return marc.Result{}, false, nil
 }
 
 // Reverse opens the single blob referenced by r and copies it to dst.

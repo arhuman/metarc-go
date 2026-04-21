@@ -23,7 +23,7 @@ func TestNearDupDelta_gainGate(t *testing.T) {
 	// The near-dup-delta transform requires a benchmark showing >10% additional
 	// gain over dedup alone on a real corpus (react or numpy).
 	// Since we don't have such corpora in the test environment, and the stub
-	// always returns ErrNotApplicable, we skip.
+	// always returns handled=false, we skip.
 	t.Skip("near-dup-delta gain < 10% (stub implementation), deferring full implementation")
 }
 
@@ -52,13 +52,17 @@ func TestNearDup_CostEstimate_zero(t *testing.T) {
 	}
 }
 
-func TestNearDup_Apply_returnsErrNotApplicable(t *testing.T) {
+func TestNearDup_Apply_returnsNotHandled(t *testing.T) {
 	n := NewNearDup()
 	ctx := context.Background()
 	e := marc.Entry{RelPath: "file.bin", Info: fakeFileInfo{size: 10}}
-	_, err := n.Apply(ctx, e, bytes.NewReader([]byte("data")), nil)
-	if err != marc.ErrNotApplicable {
-		t.Errorf("Apply: got %v, want marc.ErrNotApplicable", err)
+	facts := marc.Facts{Size: 10}
+	_, handled, err := n.Apply(ctx, e, facts, bytes.NewReader([]byte("data")), nil)
+	if err != nil {
+		t.Errorf("Apply: unexpected error %v", err)
+	}
+	if handled {
+		t.Error("Apply: expected handled=false (stub)")
 	}
 }
 
