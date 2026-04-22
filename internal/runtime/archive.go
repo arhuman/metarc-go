@@ -35,10 +35,10 @@ const (
 
 // ArchiveOpts holds optional settings for Archive.
 type ArchiveOpts struct {
-	DictCompress        string   // "", "prescan", or "simple"
-	Workers             int      // 0 = runtime.NumCPU()
-	SolidBlockSize      int64    // 0 = disabled; >0 = solid mode with this threshold in bytes
-	DisabledTransforms  []string // transform IDs to skip (e.g. "go-line-subst/v1")
+	DictCompress       string   // "", "prescan", or "simple"
+	Workers            int      // 0 = runtime.NumCPU()
+	SolidBlockSize     int64    // 0 = disabled; >0 = solid mode with this threshold in bytes
+	DisabledTransforms []string // transform IDs to skip (e.g. "go-line-subst/v1")
 }
 
 // DefaultSolidBlockSize is the default solid block threshold (4 MB).
