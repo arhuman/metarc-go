@@ -2,7 +2,11 @@
 # VARIABLES
 # ==================================================================================== #
 
-GOOS := $(shell go env GOOS)
+GOOS    := $(shell go env GOOS)
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 ifeq ($(GOOS),windows)
 BINARY_NAME := marc.exe
@@ -29,11 +33,11 @@ audit: tools
 
 ## build: build the Go binary
 build:
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/${BINARY_NAME} ./cmd/metarc
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/${BINARY_NAME} ./cmd/metarc
 
 ## build-linux: build the Go binary for a Linux environment
 build-linux:
-	CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o bin/${BINARY_NAME} ./cmd/metarc
+	CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="$(LDFLAGS)" -o bin/${BINARY_NAME} ./cmd/metarc
 
 ## clean: remove the binary and clean Go cache
 clean:
