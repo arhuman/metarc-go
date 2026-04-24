@@ -78,18 +78,22 @@ fi
 # --- special case: header ---
 
 if [[ "$NAME" == "header" && "$REPO" == "header" ]]; then
+    MARC_VERSION=$("$MARC" --version 2>&1 || echo "unknown")
+    TAR_VERSION=$(tar --version 2>/dev/null | head -1 || echo "unknown")
+    echo "_marc: ${MARC_VERSION} | tar: ${TAR_VERSION}_"
+    echo ""
     case "$TYPE" in
         size)
-            echo "| Repo | Original size | Files | tar size | marc size | % size of tar |"
-            echo "|------|---------------|-------|----------|-----------|---------------|"
+            echo "| Repo | Original size | Files | tar+${COMPRESSION} size | marc size | % size of tar |"
+            echo "|------|---------------|-------|-------------------------|-----------|---------------|"
             ;;
         time)
-            echo "| Repo | Files | tar arc | marc arc | tar ext | marc ext |"
-            echo "|------|-------|---------|----------|---------|----------|"
+            echo "| Repo | Files | tar+${COMPRESSION} arc | marc arc | tar+${COMPRESSION} ext | marc ext |"
+            echo "|------|-------|------------------------|----------|-----------------------|----------|"
             ;;
         *)
-            echo "| Repo | Original size | Files | tar compression | tar size | marc compression | marc size | % size of tar |"
-            echo "|------|---------------|-------|-------------|-------------|------------|-----------|------------------|"
+            echo "| Repo | Original size | Files | tar+${COMPRESSION} | tar size | marc | marc size | % size of tar |"
+            echo "|------|---------------|-------|---------------------|----------|------|-----------|---------------|"
             ;;
     esac
     exit 0

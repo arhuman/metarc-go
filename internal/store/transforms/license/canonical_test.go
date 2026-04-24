@@ -123,6 +123,13 @@ func TestFingerprints_loaded(t *testing.T) {
 	}
 }
 
+func TestBodyFingerprints_loaded(t *testing.T) {
+	count := BodyFingerprintCount()
+	if count < 3 {
+		t.Fatalf("expected at least 3 body fingerprints, got %d", count)
+	}
+}
+
 func TestApply_MIT(t *testing.T) {
 	c := NewCanonical()
 	ctx := context.Background()
@@ -148,6 +155,9 @@ func TestApply_MIT(t *testing.T) {
 	}
 	if p.SPDX != "MIT" {
 		t.Fatalf("expected SPDX=MIT, got %q", p.SPDX)
+	}
+	if len(p.Ops) != 0 {
+		t.Fatalf("expected empty Ops for exact match, got %d ops", len(p.Ops))
 	}
 }
 
@@ -192,4 +202,178 @@ func TestRoundTrip_license(t *testing.T) {
 	if buf.String() != canonical {
 		t.Fatalf("round-trip mismatch:\ngot:  %q\nwant: %q", buf.String()[:50], canonical[:50])
 	}
+}
+
+// makeLicenseWithCopyright replaces the placeholder copyright line in a
+// template with a real copyright line.
+func makeLicenseWithCopyright(template, copyright string) string {
+	lines := strings.Split(normalize(template), "\n")
+	for i, l := range lines {
+		if copyrightRe.MatchString(l) {
+			lines[i] = copyright
+			return strings.Join(lines, "\n")
+		}
+	}
+	// If no copyright line found (shouldn't happen for our templates),
+	// just prepend it.
+	return copyright + "\n" + normalize(template)
+}
+
+func TestApply_MIT_realCopyright(t *testing.T) {
+	c := NewCanonical()
+	ctx := context.Background()
+	sink := newFakeSink()
+
+	input := makeLicenseWithCopyright(mitText, "Copyright (c) 2024 Google LLC")
+	e := makeEntry("LICENSE", int64(len(input)))
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(input), sink)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true for MIT with real copyright")
+	}
+
+	var p params
+	if err := json.Unmarshal(result.Params, &p); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	if p.SPDX != "MIT" {
+		t.Fatalf("expected SPDX=MIT, got %q", p.SPDX)
+	}
+	if len(p.Ops) == 0 {
+		t.Fatal("expected non-empty Ops for real copyright")
+	}
+}
+
+func TestRoundTrip_MIT_realCopyright(t *testing.T) {
+	c := NewCanonical()
+	ctx := context.Background()
+	sink := newFakeSink()
+
+	input := makeLicenseWithCopyright(mitText, "Copyright (c) 2024 Google LLC")
+	e := makeEntry("LICENSE", int64(len(input)))
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(input), sink)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
+	}
+
+	blobs := &fakeBlobs{blobs: sink.blobs}
+	var buf bytes.Buffer
+	if err := c.Reverse(ctx, result, blobs, &buf); err != nil {
+		t.Fatalf("Reverse: %v", err)
+	}
+
+	if buf.String() != input {
+		t.Fatalf("round-trip mismatch:\ngot:  %q\nwant: %q", truncate(buf.String(), 80), truncate(input, 80))
+	}
+}
+
+func TestRoundTrip_AllLicenses(t *testing.T) {
+	copyrights := map[string]string{
+		"MIT":          "Copyright (c) 2023 Acme Corp",
+		"Apache-2.0":   "   Copyright 2023 Acme Corp",
+		"BSD-2-Clause": "Copyright (c) 2022 Jane Doe",
+		"BSD-3-Clause": "Copyright (c) 2021 John Smith",
+		"ISC":          "Copyright (c) 2020 Open Source Foundation",
+	}
+
+	for _, tmpl := range canonicalTexts {
+		t.Run(tmpl.SPDX, func(t *testing.T) {
+			c := NewCanonical()
+			ctx := context.Background()
+			sink := newFakeSink()
+
+			cr := copyrights[tmpl.SPDX]
+			input := makeLicenseWithCopyright(tmpl.Text, cr)
+			e := makeEntry("LICENSE", int64(len(input)))
+			facts := marc.Facts{Size: int64(len(input))}
+
+			result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(input), sink)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if !handled {
+				t.Fatalf("expected handled=true for %s", tmpl.SPDX)
+			}
+
+			var p params
+			if err := json.Unmarshal(result.Params, &p); err != nil {
+				t.Fatalf("unmarshal params: %v", err)
+			}
+			if p.SPDX != tmpl.SPDX {
+				t.Fatalf("expected SPDX=%s, got %q", tmpl.SPDX, p.SPDX)
+			}
+
+			blobs := &fakeBlobs{blobs: sink.blobs}
+			var buf bytes.Buffer
+			if err := c.Reverse(ctx, result, blobs, &buf); err != nil {
+				t.Fatalf("Reverse: %v", err)
+			}
+
+			if buf.String() != input {
+				t.Fatalf("round-trip mismatch for %s:\ngot:  %q\nwant: %q",
+					tmpl.SPDX, truncate(buf.String(), 80), truncate(input, 80))
+			}
+		})
+	}
+}
+
+func TestApply_diffTooLarge(t *testing.T) {
+	c := NewCanonical()
+	ctx := context.Background()
+	sink := newFakeSink()
+
+	// Build a license that has the same body but an enormous copyright block.
+	var sb strings.Builder
+	for i := 0; i < 50; i++ {
+		sb.WriteString("This is not a real license text line number ")
+		sb.WriteString(strings.Repeat("X", 20))
+		sb.WriteString("\n")
+	}
+	input := sb.String()
+
+	e := makeEntry("LICENSE", int64(len(input)))
+	facts := marc.Facts{Size: int64(len(input))}
+	_, handled, err := c.Apply(ctx, e, facts, strings.NewReader(input), sink)
+	if err != nil {
+		t.Fatalf("Apply: unexpected error %v", err)
+	}
+	if handled {
+		t.Fatal("expected handled=false for heavily modified license")
+	}
+}
+
+func TestParamsSize(t *testing.T) {
+	c := NewCanonical()
+	ctx := context.Background()
+	sink := newFakeSink()
+
+	input := makeLicenseWithCopyright(mitText, "Copyright (c) 2024 Google LLC, All Rights Reserved")
+	e := makeEntry("LICENSE", int64(len(input)))
+	facts := marc.Facts{Size: int64(len(input))}
+	result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(input), sink)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected handled=true")
+	}
+
+	if len(result.Params) > maxParamsBytes {
+		t.Fatalf("params size %d exceeds limit %d", len(result.Params), maxParamsBytes)
+	}
+	t.Logf("params size: %d bytes (JSON: %s)", len(result.Params), string(result.Params))
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
