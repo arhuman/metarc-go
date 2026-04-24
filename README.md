@@ -57,7 +57,7 @@ Think of it as a **playground for compression ideas**, not a finished product.
 
 ## Performances
 
-More detailed Benchmarks as well as instructions to produced yours are available in [docs/benchmarks.md](docs/benchmarks.md)
+More detailed Benchmarks as well as instructions to produce yours are available in [docs/benchmarks.md](docs/benchmarks.md)
 
 ### Compression
 
@@ -69,23 +69,23 @@ Metarc compression shines in directory with a lot of redundancy where it's file 
 1.8G	code_perso.tar.zst
 ```
 
-But the goal is to make it at least "as good" in most common cases, that's why we mainly use standard high-profile repo to measure our progress in this area.
+But the goal is to make it at least "as good" in most common cases, that's why we mainly use standard popular repositories (using various languages) to measure our progress in this area.
 
-Previous experiments used tar + gzip
+Previous comparisons used `tar + gzip`, we now use `tar + zstd` for a fairer comparison.
 
-| Repo | Original size | Files | tgz compression | tgz size | metarc compression | metarc size | % size of tgz |
-|------|---------------|-------|-----------------|----------|-------------------|-------------|----------------|
-| kubernetes | 374M | 29254 | 0m17.685s | 96M | 0m2.902s | 97M | 90.6% |
-| docker-compose | 4.5M | 706 | 0m0.374s | 1.2M | 0m0.086s | 1.1M | 97.7% |
-| vuejs | 9.8M | 732 | 0m0.431s | 3.3M | 0m0.094s | 3.3M | 100.7% |
-| numpy | 50M | 2371 | 0m1.645s | 19M | 0m0.369s | 19M | 98.2% |
-| redis | 28M | 1784 | 0m1.065s | 9.7M | 0m0.239s | 9.0M | 99.5% |
-| bootstrap | 27M | 820 | 0m0.729s | 15M | 0m0.158s | 14M | 93.6% |
-| express | 1.6M | 242 | 0m0.129s | 356K | 0m0.028s | 356K | 100.4% |
-| react | 65M | 6888 | 0m3.612s | 21M | 0m0.633s | 18M | 92.8% |
+_ marc: metarc version v0.6.0-7-gc68d3c0-dirty (c68d3c0, 2026-04-24T15:55:29Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
-But we're migrating our benchmarks to tar + zstd for a fairer comparison.
-(Expect new results soon)
+| Repo | Original size | Files | tar+zstd | tar size | marc | marc size | % size of tar |
+|------|---------------|-------|---------------------|----------|------|-----------|---------------|
+| kubernetes | 327M | 29813 | 0m12.580s | 36.1M | 0m4.270s | 36.0M | 99.9% |
+| docker-compose | 3.7M | 677 | 0m0.403s | 448.8K | 0m0.093s | 474.3K | 105.7% |
+| vuejs | 7.6M | 703 | 0m0.327s | 1.6M | 0m0.106s | 1.6M | 102.3% |
+| numpy |  40M | 2339 | 0m0.904s | 9.0M | 0m0.395s | 9.0M | 101.1% |
+| redis |  23M | 1755 | 0m0.652s | 4.2M | 0m0.279s | 4.4M | 103.2% |
+| bootstrap |  20M | 791 | 0m0.325s | 7.0M | 0m0.140s | 6.7M | 95.9% |
+| express | 1.3M | 213 | 0m0.101s | 146.4K | 0m0.034s | 152.7K | 104.3% |
+| react |  54M | 6859 | 0m2.608s | 8.5M | 0m0.955s | 8.4M | 98.9% |
+
 
 ### Speed
 
@@ -145,6 +145,15 @@ marc bench ./my-repo
 * [`docs/metacompression.md`](docs/metacompression.md) conceptual background
 * [`docs/architecture.md`](docs/architecture.md) format, pipeline, transforms
 * [`docs/benchmarks.md`](docs/benchmarks.md) benchmarks
+
+---
+
+## Contributing
+
+- :star: **Star this repo** if you find it useful
+- :bug: **[Report a bug](https://github.com/arhuman/metarc-go/issues/new?template=bug_report.md)**
+- :bulb: **[Suggest a feature](https://github.com/arhuman/metarc-go/issues/new?template=feature_request.yml)**
+- :wrench: **[Propose a transform](https://github.com/arhuman/metarc-go/issues/new?template=transform_idea.yml)**
 
 ---
 
