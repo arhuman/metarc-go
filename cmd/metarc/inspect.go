@@ -148,10 +148,14 @@ func inspectPlanLog(cmd *cobra.Command, marcPath string) error {
 	}
 
 	cmd.Printf("Plan log (%d entries):\n\n", total)
-	cmd.Printf("  %-20s %8s %8s\n", "Transform", "Applied", "Skipped")
-	cmd.Printf("  %-20s %8s %8s\n", "---------", "-------", "-------")
+	cmd.Printf("  %-20s %8s %8s %14s\n", "Transform", "Applied", "Skipped", "Est. gain")
+	cmd.Printf("  %-20s %8s %8s %14s\n", "---------", "-------", "-------", "---------")
 	for _, s := range stats {
-		cmd.Printf("  %-20s %8d %8d\n", s.TransformID, s.Applied, s.Skipped)
+		gain := ""
+		if s.EstimatedGain > 0 {
+			gain = humanBytes(s.EstimatedGain)
+		}
+		cmd.Printf("  %-20s %8d %8d %14s\n", s.TransformID, s.Applied, s.Skipped, gain)
 	}
 	return nil
 }

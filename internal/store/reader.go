@@ -439,9 +439,10 @@ func (r *Reader) QueryBlobSHAs() ([][32]byte, error) {
 
 // PlanLogStat holds per-transform aggregated plan_log stats.
 type PlanLogStat struct {
-	TransformID string
-	Applied     int64
-	Skipped     int64
+	TransformID   string
+	Applied       int64
+	Skipped       int64
+	EstimatedGain int64 // sum of estimated_gain for applied entries
 }
 
 // QueryPlanLog returns aggregated plan_log statistics grouped by transform.
@@ -449,7 +450,8 @@ func (r *Reader) QueryPlanLog() ([]PlanLogStat, error) {
 	rows, err := r.db.Query(`
 		SELECT COALESCE(transform_id, 'raw'),
 		       SUM(CASE WHEN applied = 1 THEN 1 ELSE 0 END),
-		       SUM(CASE WHEN applied = 0 THEN 1 ELSE 0 END)
+		       SUM(CASE WHEN applied = 0 THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN applied = 1 THEN estimated_gain ELSE 0 END)
 		FROM plan_log
 		GROUP BY COALESCE(transform_id, 'raw')
 		ORDER BY COALESCE(transform_id, 'raw')
@@ -462,7 +464,7 @@ func (r *Reader) QueryPlanLog() ([]PlanLogStat, error) {
 	var stats []PlanLogStat
 	for rows.Next() {
 		var s PlanLogStat
-		if err := rows.Scan(&s.TransformID, &s.Applied, &s.Skipped); err != nil {
+		if err := rows.Scan(&s.TransformID, &s.Applied, &s.Skipped, &s.EstimatedGain); err != nil {
 			return nil, fmt.Errorf("store.QueryPlanLog: scan: %w", err)
 		}
 		stats = append(stats, s)
