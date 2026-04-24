@@ -57,6 +57,8 @@ Think of it as a **playground for compression ideas**, not a finished product.
 
 ## Performances
 
+More detailed Benchmarks as well as instructions to produced yours are available in [docs/benchmarks.md](docs/benchmarks.md)
+
 ### Compression
 
 Metarc compression shines in directory with a lot of redundancy where it's file dedup outperforms even tar + zstd :
@@ -140,8 +142,9 @@ marc bench ./my-repo
 
 ## Documentation
 
-* [`docs/metacompression.md`](docs/metacompression.md) — conceptual background
-* [`docs/architecture.md`](docs/architecture.md) — format, pipeline, transforms
+* [`docs/metacompression.md`](docs/metacompression.md) conceptual background
+* [`docs/architecture.md`](docs/architecture.md) format, pipeline, transforms
+* [`docs/benchmarks.md`](docs/benchmarks.md) benchmarks
 
 ---
 
