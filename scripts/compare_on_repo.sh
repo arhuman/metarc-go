@@ -51,6 +51,7 @@ REPO=""
 MODE=""
 COMPRESSION="zstd"
 TYPE="legacy"
+COMMIT=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,12 +60,13 @@ while [[ $# -gt 0 ]]; do
         --mode)        MODE="$2"; shift 2 ;;
         --compression) COMPRESSION="$2"; shift 2 ;;
         --type)        TYPE="$2"; shift 2 ;;
+        --commit)      COMMIT="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
 if [[ -z "$NAME" || -z "$REPO" ]]; then
-    echo "Usage: $0 --name <name> --repo <repourl> [--mode log|test] [--compression zstd|gz] [--type size|time|legacy]" >&2
+    echo "Usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--mode log|test] [--compression zstd|gz] [--type size|time|legacy]" >&2
     exit 1
 fi
 
@@ -120,10 +122,17 @@ fi
 # cleanup from previous run
 rm -rf "$DIR" "$DIR2" "$TAR_EXTRACT_DIR" "$TAR_FILE" "$MARC_FILE"
 
-# 1. Shallow clone
+# 1. Clone at pinned commit (or shallow HEAD if no commit specified)
 log "=== $NAME ==="
 log "  cloning..."
-git clone --depth 1 "$REPO" "$DIR" 2>/dev/null
+if [[ -n "$COMMIT" ]]; then
+    git init "$DIR" >/dev/null 2>&1
+    git -C "$DIR" remote add origin "$REPO" 2>/dev/null
+    git -C "$DIR" fetch --depth 1 origin "$COMMIT" 2>/dev/null
+    git -C "$DIR" checkout FETCH_HEAD 2>/dev/null
+else
+    git clone --depth 1 "$REPO" "$DIR" 2>/dev/null
+fi
 
 # 2. Size + file count
 ORIG_SIZE=$(human "$DIR")
