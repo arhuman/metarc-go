@@ -342,12 +342,14 @@ func (w *Writer) writeFile(ctx context.Context, e marc.Entry, nameID, parentID i
 // It iterates the transform registry, calling Apply on each applicable transform
 // until one returns handled=true. If none handles it, the file is written raw.
 func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, parentID int64, mode uint32, mtimeNs int64, uid, gid uint32, sha [32]byte) error {
+	// Do not set sourceSHA yet — transforms write their own blobs and
+	// the original SHA must not be associated with transformed content.
+	// sourceSHA is set only for raw (untransformed) writes below.
 	sink := &blobSink{
-		w:         w,
-		compress:  w.compressor,
-		zstdEnc:   w.zstdEnc,
-		dictEnc:   w.dictEnc,
-		sourceSHA: sha,
+		w:        w,
+		compress: w.compressor,
+		zstdEnc:  w.zstdEnc,
+		dictEnc:  w.dictEnc,
 	}
 
 	zeroSHA := [32]byte{}
@@ -412,6 +414,8 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 
 	if !handled {
 		// No transform handled it -- write raw.
+		// Set sourceSHA so raw blobs can be deduped by original content hash.
+		sink.sourceSHA = sha
 		if decision.Reason == "" {
 			decision = plan.Decision{Reason: "no applicable transform"}
 		}

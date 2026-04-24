@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 
 	"github.com/arhuman/metarc-go/internal/plan"
@@ -285,14 +287,39 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 		}
 	}()
 
-	// Single store writer goroutine (current goroutine).
-	var count int64
+	// Collect all analyzed entries, separating directories from files.
+	// Directories must be written first (in scan order) so that parent
+	// references exist when child entries are inserted.
+	// Files are then sorted by extension so that solid blocks group
+	// similar content, improving zstd compression.
+	var dirs, files []AnalyzedEntry
 	for ae := range orderedCh {
 		if ae.Err != nil {
 			cancel()
 			return fmt.Errorf("runtime.Archive: analyze %s: %w", ae.Entry.RelPath, ae.Err)
 		}
+		if ae.Entry.Info.IsDir() {
+			dirs = append(dirs, ae)
+		} else {
+			files = append(files, ae)
+		}
+	}
 
+	// Sort files by extension (stable: same-extension files keep scan order).
+	sort.SliceStable(files, func(i, j int) bool {
+		return filepath.Ext(files[i].Entry.RelPath) < filepath.Ext(files[j].Entry.RelPath)
+	})
+
+	// Write directories first (scan order), then sorted files.
+	var count int64
+	for _, ae := range dirs {
+		if err := w.WriteEntryWithSHA(ctx, ae.Entry, ae.SHA); err != nil {
+			cancel()
+			return fmt.Errorf("runtime.Archive: write entry %s: %w", ae.Entry.RelPath, err)
+		}
+		count++
+	}
+	for _, ae := range files {
 		if err := w.WriteEntryWithSHA(ctx, ae.Entry, ae.SHA); err != nil {
 			cancel()
 			return fmt.Errorf("runtime.Archive: write entry %s: %w", ae.Entry.RelPath, err)
