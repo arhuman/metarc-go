@@ -1,0 +1,26 @@
+name: "Transform Idea / Metacompression Suggestion"
+description: Propose a new transform (JSON, logs, YAML, licenses, etc.)
+title: "[TRANSFORM] "
+labels: ["transform", "enhancement"]
+body:
+  - type: input
+    id: format
+    attributes:
+      label: Target Format / Data Type
+      placeholder: JSON, structured logs, license files, protobuf...
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Description of the Proposed Transform
+      description: What should this transform do? Which redundancies or structures should it exploit?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_benefit
+    attributes:
+      label: Expected Benefit
+      description: Expected gains in compression ratio, speed, or readability?
