@@ -2,12 +2,13 @@
 #
 # Sourced by scripts/compare_on_repo.sh and scripts/tune_zstd.sh. Defines:
 #   - byte/size formatting:      file_bytes, fmt_bytes, human
-#   - timing primitives:         fmt_seconds, parse_seconds, prime_cache, time_median
-#   - comparison helpers:        seconds_lt, pct_diff, pct_diff_seconds
+#   - timing primitives:         fmt_seconds, parse_seconds, prime_cache, flush_cache, time_median
+#   - comparison helpers:        seconds_lt, pct_diff, pct_diff_seconds, pct_faster
 #   - roundtrip + util:          verify_roundtrip, die
 #
-# All functions are pure (no globals written) except prime_cache and
-# verify_roundtrip which touch the filesystem deliberately.
+# All functions are pure (no globals written) except prime_cache, flush_cache,
+# and verify_roundtrip, which touch the filesystem deliberately. flush_cache
+# also requires sudo on macOS / Linux; see its docstring.
 
 # ---------------------------------------------------------------------------
 # Size formatting
@@ -195,6 +196,25 @@ pct_diff_seconds() {
     awk -v b="$b" -v n="$n" 'BEGIN{
         if (b == 0) { print "n/a"; exit }
         printf "%+.1f%%\n", (n - b) / b * 100
+    }'
+}
+
+# pct_faster "<reference time>" "<candidate time>" -> "+/-N.N%"
+# Positive when candidate is FASTER than reference (took less time);
+# negative when slower. Computed as (reference - candidate) / reference.
+# Both args in "0mSS.SSSs" form.
+#
+# Examples (reference is tar+zstd, candidate is marc):
+#   tar 16s, marc  4s  →  +75.0%   (marc 75% faster — took 25% of the time)
+#   tar  4s, marc  4s  →    0.0%
+#   tar  4s, marc  8s  →  -100.0%  (marc 100% slower — took 2× the time)
+pct_faster() {
+    local r c
+    r=$(parse_seconds "$1")
+    c=$(parse_seconds "$2")
+    awk -v r="$r" -v c="$c" 'BEGIN{
+        if (r == 0) { print "n/a"; exit }
+        printf "%+.1f%%\n", (r - c) / r * 100
     }'
 }
 

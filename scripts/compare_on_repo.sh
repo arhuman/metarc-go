@@ -122,8 +122,8 @@ if [[ "$NAME" == "header" && "$REPO" == "header" ]]; then
             echo "|------|---------------|-------|-------------------------|-----------|---------------|"
             ;;
         time)
-            echo "| Repo | Files | tar+${COMPRESSION} arc | marc arc | tar+${COMPRESSION} ext | marc ext |"
-            echo "|------|-------|------------------------|----------|-----------------------|----------|"
+            echo "| Repo | Files | tar+${COMPRESSION} arc | marc arc | tar+${COMPRESSION} ext | marc ext | marc % faster (arc) |"
+            echo "|------|-------|------------------------|----------|-----------------------|----------|---------------------|"
             ;;
         *)
             echo "| Repo | Original size | Files | tar+${COMPRESSION} | tar size | marc | marc size | % size of tar |"
@@ -220,7 +220,8 @@ case "$MODE" in
                 echo "| $NAME | ${ORIG_SIZE} | ${FILE_COUNT} | ${TAR_SIZE} | ${MARC_SIZE} | ${RATIO} |"
                 ;;
             time)
-                echo "| $NAME | ${FILE_COUNT} | ${TAR_TIME} | ${METARC_TIME} | ${TAR_EXTRACT_TIME} | ${MARC_EXTRACT_TIME} |"
+                FASTER=$(pct_faster "$TAR_TIME" "$METARC_TIME")
+                echo "| $NAME | ${FILE_COUNT} | ${TAR_TIME} | ${METARC_TIME} | ${TAR_EXTRACT_TIME} | ${MARC_EXTRACT_TIME} | ${FASTER} |"
                 ;;
             *)
                 echo "| $NAME | ${ORIG_SIZE} | ${FILE_COUNT} | ${TAR_TIME} | ${TAR_SIZE} | ${METARC_TIME} | ${MARC_SIZE} | ${RATIO} |"
