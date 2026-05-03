@@ -53,6 +53,68 @@ func (s *blobSink) WriteWithSHA(_ context.Context, r io.Reader, sha [32]byte) (m
 	return s.writeData(data, sha)
 }
 
+// WriteRaw writes blob data without zstd compression and without routing
+// through the solid accumulator. Used by transforms (e.g. passthrough)
+// that handle already-compressed file types where running through zstd
+// is wasted CPU and slightly inflates the archive. The blob is recorded
+// with compressed=CompressNone so the reader streams its bytes as-is.
+//
+// Dedup still applies: if a blob with the same content hash already
+// exists, the existing BlobID is reused.
+func (s *blobSink) WriteRaw(_ context.Context, r io.Reader) (marc.BlobID, error) {
+	h := blake3.New()
+	data, err := io.ReadAll(io.TeeReader(r, h))
+	if err != nil {
+		return 0, fmt.Errorf("blobSink.WriteRaw: read: %w", err)
+	}
+	var sha [32]byte
+	copy(sha[:], h.Sum(nil))
+	return s.writeDataRaw(data, sha)
+}
+
+// writeDataRaw is like writeData but never compresses and never goes
+// through the solid accumulator. The blob row is inserted with
+// compressed=CompressNone.
+func (s *blobSink) writeDataRaw(data []byte, sha [32]byte) (marc.BlobID, error) {
+	if id, ok := s.Reuse(sha); ok {
+		return id, nil
+	}
+
+	if len(data) > math.MaxUint32 {
+		return 0, fmt.Errorf("blobSink.writeDataRaw: blob exceeds max chunk size (4 GB)")
+	}
+
+	chunkOffset := s.w.blobOff
+	var chunkHeader [5]byte
+	chunkHeader[0] = marc.ChunkTypeBlob
+	binary.BigEndian.PutUint32(chunkHeader[1:5], uint32(len(data)))
+
+	if err := s.w.writeAndHash(chunkHeader[:]); err != nil {
+		return 0, fmt.Errorf("blobSink.writeDataRaw: write chunk header: %w", err)
+	}
+	if err := s.w.writeAndHash(data); err != nil {
+		return 0, fmt.Errorf("blobSink.writeDataRaw: write chunk payload: %w", err)
+	}
+	s.w.blobOff += int64(len(chunkHeader)) + int64(len(data))
+
+	ulen := int64(len(data))
+	clen := ulen
+	var sourceSHAParam any
+	zeroSHA := [32]byte{}
+	if s.sourceSHA != zeroSHA {
+		sourceSHAParam = s.sourceSHA[:]
+	}
+	res, err := s.w.tx.Exec(
+		`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed) VALUES (?, ?, ?, ?, ?, ?)`,
+		sha[:], sourceSHAParam, chunkOffset, clen, ulen, marc.CompressNone,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("blobSink.writeDataRaw: insert blob: %w", err)
+	}
+	id, _ := res.LastInsertId()
+	return marc.BlobID(id), nil
+}
+
 // writeData deduplicates on sha, compresses, and writes the blob chunk.
 func (s *blobSink) writeData(data []byte, sha [32]byte) (marc.BlobID, error) {
 	// Check for existing blob with same hash.
