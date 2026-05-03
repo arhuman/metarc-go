@@ -3,7 +3,7 @@
 # Sourced by scripts/compare_on_repo.sh and scripts/tune_zstd.sh. Defines:
 #   - byte/size formatting:      file_bytes, fmt_bytes, human
 #   - timing primitives:         fmt_seconds, parse_seconds, prime_cache, flush_cache, time_median
-#   - comparison helpers:        seconds_lt, pct_diff, pct_diff_seconds, pct_faster
+#   - comparison helpers:        seconds_lt, pct_diff, pct_diff_seconds, pct_faster, speedup_label
 #   - roundtrip + util:          verify_roundtrip, die
 #
 # All functions are pure (no globals written) except prime_cache, flush_cache,
@@ -215,6 +215,29 @@ pct_faster() {
     awk -v r="$r" -v c="$c" 'BEGIN{
         if (r == 0) { print "n/a"; exit }
         printf "%+.1f%%\n", (r - c) / r * 100
+    }'
+}
+
+# speedup_label "<reference time>" "<candidate time>" -> "1.6× faster" / "1.6× slower" / "1×"
+#
+# Multiplicative form of the candidate-vs-reference comparison. Always
+# emits a positive multiplier with an explicit "faster" or "slower"
+# suffix, which reads better in tables than a percentage that can be
+# negative. Both args in "0mSS.SSSs" form.
+#
+# Examples (reference is tar+zstd, candidate is marc):
+#   tar 16s, marc  4s  →  "4× faster"
+#   tar  4s, marc  4s  →  "1×"
+#   tar  4s, marc  8s  →  "2× slower"
+speedup_label() {
+    local r c
+    r=$(parse_seconds "$1")
+    c=$(parse_seconds "$2")
+    awk -v r="$r" -v c="$c" 'BEGIN{
+        if (r == 0 || c == 0) { print "n/a"; exit }
+        if (r > c)      { printf "%.2g× faster\n", r / c }
+        else if (c > r) { printf "%.2g× slower\n", c / r }
+        else            { print "1×" }
     }'
 }
 
