@@ -73,28 +73,30 @@ But the goal is to make it at least "as good" in most common cases, that's why w
 
 Previous comparisons used `tar + gzip`, we now use `tar + zstd` for a fairer comparison.
 
-_ marc: metarc version v0.6.0-7-gc68d3c0-dirty (c68d3c0, 2026-04-24T15:55:29Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
-| Repo | Original size | Files | tar+zstd | tar size | marc | marc size | % size of tar |
-|------|---------------|-------|---------------------|----------|------|-----------|---------------|
-| kubernetes | 327M | 29813 | 0m12.580s | 36.1M | 0m4.270s | 36.0M | 99.9% |
-| docker-compose | 3.7M | 677 | 0m0.403s | 448.8K | 0m0.093s | 474.3K | 105.7% |
-| vuejs | 7.6M | 703 | 0m0.327s | 1.6M | 0m0.106s | 1.6M | 102.3% |
-| numpy |  40M | 2339 | 0m0.904s | 9.0M | 0m0.395s | 9.0M | 101.1% |
-| redis |  23M | 1755 | 0m0.652s | 4.2M | 0m0.279s | 4.4M | 103.2% |
-| bootstrap |  20M | 791 | 0m0.325s | 7.0M | 0m0.140s | 6.7M | 95.9% |
-| express | 1.3M | 213 | 0m0.101s | 146.4K | 0m0.034s | 152.7K | 104.3% |
-| react |  54M | 6859 | 0m2.608s | 8.5M | 0m0.955s | 8.4M | 98.9% |
+`./scripts/run_bench.sh --type size`
+
+_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+
+| Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
+|------|---------------|-------|-------------------------|-----------|---------------|
+| kubernetes | 376M | 29838 | 81.1M | 75.3M | 92.8% |
+| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 96.5% |
+| vuejs | 9.9M | 728 | 3.3M | 3.2M | 97.0% |
+| numpy |  50M | 2364 | 18.4M | 17.7M | 96.0% |
+| redis |  28M | 1780 | 8.9M | 8.4M | 94.3% |
+| bootstrap |  27M | 816 | 13.9M | 13.4M | 96.6% |
+| express | 1.6M | 238 | 345.7K | 332.5K | 96.2% |
+| react |  65M | 6884 | 18.5M | 17.3M | 93.6% |
 
 
 ### Speed
 
 > [!NOTE]
-> Early speed comparisons against `tar + gzip` overstated Metarc’s advantage: most of the gap came from using `zstd`, not from Metarc’s architecture alone.
+> The latest version shows a visible compression improvement:
+> New metacompression transformers and speed/compression tradeoff (raising zstd compression level) explains the results.
 >
-> A fairer comparison against `tar + zstd` shows that Metarc is not yet competitive with an optimized tar-based pipeline.
->
-> Its value today is different: Metarc is already a usable playground for exploring metacompression ideas, structural transforms, and cross-file compression strategies.
+> Metarc is proving to be an efficient playground for exploring metacompression ideas, structural transforms, and cross-file compression strategies.
 
 ---
 

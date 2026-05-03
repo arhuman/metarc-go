@@ -3,104 +3,89 @@
 All benchmarks run against shallow clones of real-world open source repositories,
 archived with `marc` vs `tar+zstd`, on the same machine.
 
-## Changelog
-
-2026-05-03 (later): **Cold cache is now the default; `--hot` opts into warm methodology.**
-The earlier 2026-05-03 change (warm-cache methodology) had an unintended side effect: it systematically favoured I/O-bound tools (tar+zstd reading from RAM) over CPU-bound tools (marc), making "marc vs tar+zstd" comparisons misleading for users who archive cold files. The default is now back to cold cache (matches the methodology of the pre-2026-05-03 historical tables, so before/after comparisons are honest). Pass `--hot` to use warm-cache low-variance methodology when tracking small CPU-pipeline regressions during development.
-
-2026-05-03: **Bench methodology changed — old timing tables are not directly comparable.**
-`scripts/run_bench.sh` and `scripts/compare_on_repo.sh` now report the **median of 3 timed runs** with cache priming + 1 warmup. Run-to-run variance dropped from ~30% under the old single-run methodology to under 3%. (Note: this was reverted to a cold-cache default the same day — see the entry above. The median-of-3 + warmup machinery is still used in `--hot` mode.)
-
-2026-04-23:  **Last updated** 
-Pin repository used in tests to a specific commit for reproducible results.
-(Means that comparing to previous results is meaningful)
-metarc version v0.6.0-6-g41aa53a-dirty (41aa53a, 2026-04-24T15:22:51Z)
-Transforms:
-  dedup/v1                  enabled
-  go-line-subst/v1          enabled
-  license-canonical/v1      enabled
-  near-dup-delta/v1         stub
-
-2026-04-22: 
-With `go-line-subst/v1` transform enabled
-
----
-
 ## Performance
 
 ### Size
 
 #### vs tar+zstd
 
-_marc: metarc version v0.6.0-7-gc68d3c0-dirty (c68d3c0, 2026-04-24T15:55:29Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+`./scripts/run_bench.sh --type size`
+
+_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 375M | 29838 | 81.1M | 81.0M | 99.9% |
-| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 100.1% |
-| vuejs | 9.9M | 728 | 3.3M | 3.3M | 101.5% |
-| numpy |  50M | 2364 | 18.4M | 18.5M | 100.5% |
-| redis |  29M | 1780 | 8.9M | 9.0M | 101.8% |
-| bootstrap |  27M | 816 | 13.9M | 13.6M | 98.4% |
-| express | 1.6M | 238 | 345.4K | 356.5K | 103.2% |
-| react |  66M | 6884 | 18.5M | 18.3M | 98.8% |
+| kubernetes | 376M | 29838 | 81.1M | 75.3M | 92.8% |
+| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 96.5% |
+| vuejs | 9.9M | 728 | 3.3M | 3.2M | 97.0% |
+| numpy |  50M | 2364 | 18.4M | 17.7M | 96.0% |
+| redis |  28M | 1780 | 8.9M | 8.4M | 94.3% |
+| bootstrap |  27M | 816 | 13.9M | 13.4M | 96.6% |
+| express | 1.6M | 238 | 345.7K | 332.5K | 96.2% |
+| react |  65M | 6884 | 18.5M | 17.3M | 93.6% |
+
 
 #### vs tar+gz
 
-_marc: metarc version v0.6.0-7-gc68d3c0-dirty (c68d3c0, 2026-04-24T15:55:29Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+ `./scripts/run_bench.sh --type size --compression gz`
+
+_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+gz size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 90.0M | 81.0M | 90.0% |
-| docker-compose | 4.5M | 702 | 1.2M | 1.1M | 95.2% |
-| vuejs | 9.9M | 728 | 3.3M | 3.3M | 100.9% |
-| numpy |  50M | 2364 | 18.9M | 18.5M | 97.9% |
-| redis |  29M | 1780 | 9.0M | 9.0M | 100.3% |
-| bootstrap |  27M | 816 | 14.7M | 13.6M | 92.6% |
-| express | 1.6M | 238 | 354.0K | 356.5K | 100.7% |
-| react |  65M | 6884 | 19.8M | 18.3M | 92.3% |
+| kubernetes | 376M | 29838 | 90.0M | 75.3M | 83.6% |
+| docker-compose | 4.5M | 702 | 1.2M | 1.1M | 91.9% |
+| vuejs | 9.8M | 728 | 3.3M | 3.2M | 96.5% |
+| numpy |  50M | 2364 | 18.9M | 17.7M | 93.4% |
+| redis |  28M | 1780 | 9.0M | 8.4M | 92.9% |
+| bootstrap |  27M | 816 | 14.7M | 13.4M | 91.0% |
+| express | 1.6M | 238 | 354.0K | 332.5K | 93.9% |
+| react |  65M | 6884 | 19.8M | 17.3M | 87.4% |
 
-> Against tar+gz, marc shines on large, Go-heavy or mixed-language repos (kubernetes −10%, react −7%).
-> Against tar+zstd, most repos are at near-parity or slightly larger — zstd already exploits much of the same
-> redundancy that marc's semantic transforms target, so the net gain is modest at default zstd levels.
-> The speed advantage holds regardless of the baseline compressor.
+> Against tar+gz, marc shines on large, Go-heavy or mixed-language repos.
+> Against tar+zstd, Metarc is now (sometimes slightly) better on all repos.
 
 ### Time
 
-> ⚠️ The two timing tables below were captured with the **pre-2026-05-03 single-run methodology**. They are kept for historical reference but should not be compared directly against numbers from current `run_bench.sh --type time` output, which uses median-of-3 with cache priming and a warmup pass. See the 2026-05-03 changelog entry above. Re-run on the same machine to refresh.
-
 #### vs tar+zstd
 
-_marc: metarc version v0.6.0-7-gc68d3c0-dirty (c68d3c0, 2026-04-24T15:55:29Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+ `./scripts/run_bench.sh --type time`
 
-| Repo | Files | tar+zstd arc | marc arc | tar+zstd ext | marc ext |
-|------|-------|------------------------|----------|-----------------------|----------|
-| kubernetes | 29838 | 0m14.169s | 0m4.792s | 0m12.865s | 0m4.892s |
-| docker-compose | 702 | 0m0.313s | 0m0.100s | 0m0.281s | 0m0.104s |
-| vuejs | 728 | 0m0.306s | 0m0.116s | 0m0.271s | 0m0.102s |
-| numpy | 2364 | 0m0.993s | 0m0.409s | 0m0.884s | 0m0.359s |
-| redis | 1780 | 0m0.664s | 0m0.286s | 0m0.610s | 0m0.252s |
-| bootstrap | 816 | 0m0.352s | 0m0.163s | 0m0.310s | 0m0.135s |
-| express | 238 | 0m0.129s | 0m0.039s | 0m0.102s | 0m0.040s |
-| react | 6884 | 0m2.688s | 0m0.993s | 0m2.420s | 0m0.944s |
+_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold)_
+
+| Repo | Files | tar+zstd arc | marc arc | tar+zstd ext | marc ext | marc speedup (arc) |
+|------|-------|------------------------|----------|-----------------------|----------|--------------------|
+| kubernetes | 29838 | 0m14.320s | 0m7.881s | 0m11.819s | 0m4.935s | 1.8× faster |
+| docker-compose | 702 | 0m0.611s | 0m0.157s | 0m0.494s | 0m0.147s | 3.9× faster |
+| vuejs | 728 | 0m0.573s | 0m0.228s | 0m0.472s | 0m0.136s | 2.5× faster |
+| numpy | 2364 | 0m1.408s | 0m0.908s | 0m0.956s | 0m0.369s | 1.6× faster |
+| redis | 1780 | 0m1.098s | 0m0.609s | 0m0.770s | 0m0.279s | 1.8× faster |
+| bootstrap | 816 | 0m0.639s | 0m0.331s | 0m0.503s | 0m0.159s | 1.9× faster |
+| express | 238 | 0m0.352s | 0m0.087s | 0m0.325s | 0m0.068s | 4× faster |
+| react | 6884 | 0m3.466s | 0m1.339s | 0m2.481s | 0m0.948s | 2.6× faster |
 
 #### vs tar+gz
 
-_marc: metarc version v0.6.0-7-gc68d3c0-dirty (c68d3c0, 2026-04-24T15:55:29Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+`./scripts/run_bench.sh --type time --compression gz`
 
-| Repo | Files | tar+gz arc | marc arc | tar+gz ext | marc ext |
-|------|-------|------------------------|----------|-----------------------|----------|
-| kubernetes | 29838 | 0m18.053s | 0m4.907s | 0m12.470s | 0m5.201s |
-| docker-compose | 702 | 0m0.345s | 0m0.103s | 0m0.276s | 0m0.109s |
-| vuejs | 728 | 0m0.442s | 0m0.122s | 0m0.442s | 0m0.117s |
-| numpy | 2364 | 0m1.665s | 0m0.421s | 0m0.859s | 0m0.347s |
-| redis | 1780 | 0m1.062s | 0m0.297s | 0m0.628s | 0m0.260s |
-| bootstrap | 816 | 0m0.730s | 0m0.163s | 0m0.331s | 0m0.140s |
-| express | 238 | 0m0.130s | 0m0.038s | 0m0.098s | 0m0.041s |
-| react | 6884 | 0m3.584s | 0m0.899s | 0m2.462s | 0m0.908s |
+_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold)_
 
-> marc archives consistently 4–5× faster than tar+zstd and 5–6× faster than tar+gz, due to parallel
-> BLAKE3 hashing and lightweight transforms. marc also extracts 2× faster than tar+zstd and 2–3× faster than tar+gz.
+| Repo | Files | tar+gz arc | marc arc | tar+gz ext | marc ext | marc speedup (arc) |
+|------|-------|------------------------|----------|-----------------------|----------|--------------------|
+| kubernetes | 29838 | 0m18.052s | 0m7.481s | 0m12.192s | 0m4.824s | 2.4× faster |
+| docker-compose | 702 | 0m0.594s | 0m0.164s | 0m0.415s | 0m0.130s | 3.6× faster |
+| vuejs | 728 | 0m0.698s | 0m0.227s | 0m0.442s | 0m0.127s | 3.1× faster |
+| numpy | 2364 | 0m1.967s | 0m0.929s | 0m1.001s | 0m0.351s | 2.1× faster |
+| redis | 1780 | 0m1.399s | 0m0.592s | 0m0.723s | 0m0.260s | 2.4× faster |
+| bootstrap | 816 | 0m1.004s | 0m0.316s | 0m0.498s | 0m0.155s | 3.2× faster |
+| express | 238 | 0m0.328s | 0m0.076s | 0m0.285s | 0m0.067s | 4.3× faster |
+| react | 6884 | 0m4.066s | 0m1.379s | 0m2.456s | 0m0.880s | 2.9× faster |
+
+
+> marc is still faster that tar+zstd and tar+gz, due to parallel BLAKE3 hashing and lightweight transforms 
+> BUT current version traded some speed for better compression (zstd compression level)
 
 ---
 
@@ -149,7 +134,7 @@ The bench script measures **wall-clock**, and wall-clock depends heavily on whet
 | What it measures | Realistic I/O-bound wall-clock: how long the tool actually takes when files have to come off disk. | CPU-bound encoding speed: how fast the tool's pipeline runs when reads come from RAM. |
 | Variance | Higher (real disk I/O is noisy). | < 3% (priming + warmup hold the OS state constant). |
 | Methodology | No warmup. Median of 3 timed runs, with `purge` (macOS) or `sync && drop_caches` (Linux) before each. | 1 untimed warmup, then median of 3 timed runs with `prime_cache` before each. |
-| Needs sudo | Yes — script primes the credential once at startup; falls back to warm with one warning if unavailable. | No. |
+| Needs sudo | **Yes** — script primes the credential once at startup; falls back to warm with one warning if unavailable. | No. |
 | Use when | reporting numbers users will actually experience; reproducing pre-2026-05-03 historical numbers; running unattended in CI for honest wall-clock. | tracking small regressions during development; comparing CPU efficiency between tool versions. |
 
 #### Why cold is the default
@@ -176,3 +161,29 @@ Use `compare_on_repo.sh` directly to benchmark one repository:
 ```
 
 Append `--mode log` to see progress output, or `--mode test` to verify round-trip integrity only.
+
+---
+
+## Changelog
+
+2026-05-03 (later): **Cold cache is now the default; `--hot` opts into warm methodology.**
+The earlier 2026-05-03 change (warm-cache methodology) had an unintended side effect: it systematically favoured I/O-bound tools (tar+zstd reading from RAM) over CPU-bound tools (marc), making "marc vs tar+zstd" comparisons misleading for users who archive cold files. The default is now back to cold cache (matches the methodology of the pre-2026-05-03 historical tables, so before/after comparisons are honest). Pass `--hot` to use warm-cache low-variance methodology when tracking small CPU-pipeline regressions during development.
+**Note: Cold cache require `sudo` to flush the disk cache.**
+
+2026-05-03: **Bench methodology changed — old timing tables are not directly comparable.**
+`scripts/run_bench.sh` and `scripts/compare_on_repo.sh` now report the **median of 3 timed runs** with cache priming + 1 warmup. Run-to-run variance dropped from ~30% under the old single-run methodology to under 3%. (Note: this was reverted to a cold-cache default the same day — see the entry above. The median-of-3 + warmup machinery is still used in `--hot` mode.)
+
+2026-04-23:  **Last updated** 
+Pin repository used in tests to a specific commit for reproducible results.
+(Means that comparing to previous results is meaningful)
+metarc version v0.6.0-6-g41aa53a-dirty (41aa53a, 2026-04-24T15:22:51Z)
+Transforms:
+  dedup/v1                  enabled
+  go-line-subst/v1          enabled
+  license-canonical/v1      enabled
+  near-dup-delta/v1         stub
+
+2026-04-22: 
+With `go-line-subst/v1` transform enabled
+
+---
