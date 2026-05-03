@@ -6,10 +6,32 @@ set -euo pipefail
 # All progress/debug output goes to stderr so that stdout contains
 # only the markdown table, enabling:  ./run_bench.sh >> RESULTS.md
 #
-# Cache mode (timing only):
-#   default   warm: prime cache + warmup, low variance, CPU-bound speed
-#   --cold    flush cache before each run, realistic I/O-bound wall-clock
-#             (needs sudo for `purge` on macOS or drop_caches on Linux)
+# Cache mode (affects --type time only; size is deterministic):
+#
+#   default   WARM: prime the OS page cache before every timed iteration,
+#             then run one untimed warmup, then 3 timed runs. Median
+#             reported. Variance < 3%. Reflects CPU-bound encoding speed
+#             and is the right mode for tracking small regressions.
+#
+#   --cold    COLD: flush the OS page cache before each timed iteration
+#             (`purge` on macOS, `sync && drop_caches` on Linux). No
+#             warmup, since warming would defeat the cold purpose.
+#             Reflects realistic I/O-bound wall-clock — what users
+#             actually experience when archiving a fresh checkout.
+#
+#             Use --cold to:
+#               - reproduce / compare against pre-2026-05-03 historical
+#                 numbers in docs/benchmarks.md (those were cold-cache);
+#               - run unattended in CI where the goal is realistic
+#                 wall-clock, not CPU-only regression tracking;
+#               - sanity-check that warm-cache wins haven't masked an
+#                 I/O regression.
+#
+#             Needs sudo on both macOS (`purge`) and Linux (`drop_caches`).
+#             The script primes sudo once at startup (one TouchID /
+#             password prompt) so the 3-iteration loops run unattended.
+#             If sudo isn't available, falls back to warm cache and
+#             prints one warning rather than spamming stderr.
 #
 # On macOS, the script self-wraps in `caffeinate -di` to prevent display
 # sleep / idle throttling during the benchmark. Set NO_CAFFEINATE=1 to opt

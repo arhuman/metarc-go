@@ -21,12 +21,24 @@ set -euo pipefail
 #   --type size         size/ratio columns only
 #   --type time         timing columns only
 #
-# Cache mode:
-#   (default)    warm: prime the page cache before each timed run + 1 warmup
-#                (low variance; reflects CPU-bound speed)
-#   --cold       evict the page cache before each timed run (no warmup)
-#                (reflects realistic I/O-bound wall-clock; needs sudo on
-#                 macOS for `purge` and on Linux for drop_caches)
+# Cache mode (affects --type time only):
+#   (default)    WARM: prime the page cache before each timed run + 1 warmup.
+#                Variance < 3%. Best for tracking small regressions because
+#                the OS state is held constant across iterations. Numbers
+#                reflect the tool's CPU-bound speed when I/O is not the
+#                bottleneck.
+#
+#   --cold       COLD: flush the page cache (purge / drop_caches) before
+#                each timed run. No warmup. Reflects realistic I/O-bound
+#                wall-clock — what users actually experience when archiving
+#                files that aren't already in RAM. Use this to:
+#                  - compare against pre-2026-05-03 historical numbers;
+#                  - run unattended in CI for honest wall-clock results;
+#                  - rule out an I/O regression that warm-cache would hide.
+#                Needs sudo (`purge` on macOS, `drop_caches` on Linux). The
+#                script primes sudo once at startup so the iteration loop
+#                runs unattended; if sudo is unavailable, falls back to
+#                warm-cache with one warning.
 #
 # Special case: --name header --repo header  → prints the table header.
 

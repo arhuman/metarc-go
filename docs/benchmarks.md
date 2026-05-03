@@ -135,7 +135,30 @@ Outputs all columns combined (default if `--type` is omitted).
 |------|--------|---------|-------------|
 | `--type` | `size`, `time`, `legacy` | `legacy` | Selects output columns |
 | `--compression` | `zstd`, `gz` | `zstd` | Final compressor for tar baseline |
-| `--cold` | (flag) | off (warm) | Flush the OS page cache before each timed run. Reflects realistic I/O-bound wall-clock. Needs sudo for `purge` (macOS) or `drop_caches` (Linux); the script primes sudo once at startup so you get one TouchID / password prompt and the rest runs unattended. If sudo isn't available, falls back to warm-cache and prints one warning. |
+| `--cold` | (flag) | off (warm) | Flush the OS page cache before each timed run. See *Choosing warm vs cold* below. |
+
+### Choosing warm vs cold
+
+The bench script measures **wall-clock**, and wall-clock depends heavily on whether the input files are in the OS page cache. The two modes answer different questions; pick the one that matches your goal.
+
+| | Warm (default) | Cold (`--cold`) |
+|---|---|---|
+| What it measures | CPU-bound encoding speed: how fast the tool's pipeline runs when reads come from RAM. | Realistic I/O-bound wall-clock: how long the tool actually takes when files have to come off disk. |
+| Variance | < 3% (priming + warmup hold the OS state constant). | Higher (real disk I/O is noisy). |
+| Methodology | 1 untimed warmup, then median of 3 timed runs with `prime_cache` before each. | No warmup. Median of 3 timed runs, with `purge` (macOS) or `sync && drop_caches` (Linux) before each. |
+| Needs sudo | No. | Yes — script primes the credential once at startup. |
+| Use when | tracking small regressions; comparing CPU efficiency between tool versions. | reproducing pre-2026-05-03 historical numbers; running CI; investigating an I/O regression. |
+
+#### Why we introduced `--cold`
+
+The default warm methodology was added on 2026-05-03 to kill the ~30% run-to-run variance the old single-run methodology had — variance that was hiding small regressions and producing nonsense like "tar+zstd 14s on Monday, 2s on Tuesday" on the same machine. The fix worked (variance dropped under 3%), but it had a side effect: warm-cache numbers systematically favor I/O-bound tools (tar+zstd reading from RAM) over CPU-bound tools (marc, which is gated by parallel BLAKE3 hashing regardless of cache state). On a corpus like kubernetes, warm tar+zstd lands at ~2 s while cold tar+zstd lands at ~14 s — a 7× spread.
+
+`--cold` exists for two reasons:
+
+1. **Comparability with historical numbers.** The tables earlier in this file were captured with the old (effectively cold-cache) methodology. To do an honest before/after comparison after any change, run with `--cold` so the methodology matches.
+2. **Realistic I/O-bound numbers for CI and release notes.** When a user archives a freshly-checked-out repo, files are *not* warm in their page cache. The number that matters to them is `--cold`, not the CPU-bound warm number that's optimised for regression tracking. Use `--cold` for any number that ends up in user-facing documentation or release notes.
+
+The default stays warm because the typical reader of these tables is *us*, looking for regressions during development. The cold mode is for honest external claims and for matching the historical baseline.
 
 ### Single repo
 
