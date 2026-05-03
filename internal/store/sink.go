@@ -21,8 +21,11 @@ type blobSink struct {
 	w         *Writer
 	compress  string
 	zstdEnc   *zstd.Encoder
-	dictEnc   *zstd.Encoder // encoder with dictionary (when dict-compress enabled)
-	sourceSHA [32]byte      // original content SHA for dedup (set by writeFileWithSHA)
+	dictEnc   *zstd.Encoder     // encoder with dictionary (when dict-compress enabled)
+	sourceSHA [32]byte          // original content SHA for dedup (set by writeFileWithSHA)
+	zstdLevel zstd.EncoderLevel // level for per-blob zstd encoder
+	dictLevel zstd.EncoderLevel // level for dict-encoded zstd encoder
+	window    int               // optional zstd window size (0 = library default)
 }
 
 // Write computes BLAKE3-256 while streaming, deduplicates, and writes the blob chunk.
@@ -150,10 +153,14 @@ func (s *blobSink) Reuse(sha [32]byte) (marc.BlobID, bool) {
 // compressZstd compresses data using zstd, reusing the encoder if available.
 func (s *blobSink) compressZstd(data []byte) ([]byte, error) {
 	if s.zstdEnc == nil {
-		enc, err := zstd.NewWriter(nil,
-			zstd.WithEncoderLevel(zstd.SpeedDefault),
+		opts := []zstd.EOption{
+			zstd.WithEncoderLevel(s.zstdLevel),
 			zstd.WithEncoderConcurrency(1),
-		)
+		}
+		if s.window > 0 {
+			opts = append(opts, zstd.WithWindowSize(s.window))
+		}
+		enc, err := zstd.NewWriter(nil, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("blobSink: create zstd encoder: %w", err)
 		}
@@ -165,11 +172,15 @@ func (s *blobSink) compressZstd(data []byte) ([]byte, error) {
 // compressDictZstd compresses data using zstd with a shared dictionary.
 func (s *blobSink) compressDictZstd(data []byte) ([]byte, error) {
 	if s.dictEnc == nil {
-		enc, err := zstd.NewWriter(nil,
-			zstd.WithEncoderLevel(zstd.SpeedDefault),
+		opts := []zstd.EOption{
+			zstd.WithEncoderLevel(s.dictLevel),
 			zstd.WithEncoderConcurrency(1),
 			zstd.WithEncoderDict(s.w.dictData),
-		)
+		}
+		if s.window > 0 {
+			opts = append(opts, zstd.WithWindowSize(s.window))
+		}
+		enc, err := zstd.NewWriter(nil, opts...)
 		if err != nil {
 			return nil, fmt.Errorf("blobSink: create dict zstd encoder: %w", err)
 		}

@@ -101,11 +101,16 @@ func (sa *solidAccumulator) flush() error {
 		return nil
 	}
 
-	// Compress the entire concatenated buffer as one zstd frame.
-	enc, err := zstd.NewWriter(nil,
-		zstd.WithEncoderLevel(zstd.SpeedDefault),
+	// Compress the entire concatenated buffer as one zstd frame at the
+	// writer-configured solid-block level.
+	encOpts := []zstd.EOption{
+		zstd.WithEncoderLevel(sa.w.zstdCfg.Solid),
 		zstd.WithEncoderConcurrency(1),
-	)
+	}
+	if sa.w.zstdCfg.WindowSize > 0 {
+		encOpts = append(encOpts, zstd.WithWindowSize(sa.w.zstdCfg.WindowSize))
+	}
+	enc, err := zstd.NewWriter(nil, encOpts...)
 	if err != nil {
 		return fmt.Errorf("solidAccumulator.flush: create encoder: %w", err)
 	}

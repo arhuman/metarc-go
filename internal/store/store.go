@@ -47,6 +47,7 @@ type Writer struct {
 	fileHasher      *blake3.Hasher    // running hash of all bytes written so far
 	solidAcc        *solidAccumulator // non-nil when solid block compression is enabled
 	solidSize       int64             // solid block size threshold (0 = disabled)
+	zstdCfg         ZstdConfig        // per-chunk-type zstd encoder settings
 }
 
 const batchSize = 1000
@@ -84,6 +85,14 @@ func WithDictSimple() Option {
 func WithSolidBlockSize(size int64) Option {
 	return func(w *Writer) {
 		w.solidSize = size
+	}
+}
+
+// WithZstdConfig overrides the per-chunk-type zstd encoder settings. If never
+// called, the Writer uses DefaultZstdConfig.
+func WithZstdConfig(cfg ZstdConfig) Option {
+	return func(w *Writer) {
+		w.zstdCfg = cfg
 	}
 }
 
@@ -159,6 +168,7 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 		parentMap:  make(map[string]int64),
 		compressor: "zstd",
 		fileHasher: blake3.New(),
+		zstdCfg:    DefaultZstdConfig(),
 	}
 
 	for _, opt := range opts {
@@ -346,10 +356,13 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 	// the original SHA must not be associated with transformed content.
 	// sourceSHA is set only for raw (untransformed) writes below.
 	sink := &blobSink{
-		w:        w,
-		compress: w.compressor,
-		zstdEnc:  w.zstdEnc,
-		dictEnc:  w.dictEnc,
+		w:         w,
+		compress:  w.compressor,
+		zstdEnc:   w.zstdEnc,
+		dictEnc:   w.dictEnc,
+		zstdLevel: w.zstdCfg.Blob,
+		dictLevel: w.zstdCfg.Dict,
+		window:    w.zstdCfg.WindowSize,
 	}
 
 	zeroSHA := [32]byte{}
@@ -631,8 +644,12 @@ func (w *Writer) finalize() error {
 		return fmt.Errorf("read serialized db: %w", err)
 	}
 
-	// Compress with zstd.
-	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+	// Compress with zstd at the configured catalog level.
+	catOpts := []zstd.EOption{zstd.WithEncoderLevel(w.zstdCfg.Catalog)}
+	if w.zstdCfg.WindowSize > 0 {
+		catOpts = append(catOpts, zstd.WithWindowSize(w.zstdCfg.WindowSize))
+	}
+	enc, err := zstd.NewWriter(nil, catOpts...)
 	if err != nil {
 		return fmt.Errorf("create zstd encoder for catalog: %w", err)
 	}
@@ -720,7 +737,7 @@ func (w *Writer) trainDictFromSamples() {
 		ID:       1,
 		Contents: w.dictSamples,
 		History:  history,
-		Level:    zstd.SpeedDefault,
+		Level:    w.zstdCfg.Dict,
 	})
 	if err != nil {
 		// Training failed; continue with standard zstd.

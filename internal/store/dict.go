@@ -24,7 +24,16 @@ const (
 
 // TrainDictionary samples files from root and trains a zstd dictionary.
 // Returns the dictionary bytes, or nil if training fails or not enough data.
+//
+// Training uses zstd.SpeedDefault. Use TrainDictionaryWithLevel to pick the
+// dictionary build level explicitly.
 func TrainDictionary(root string, maxSamples int, maxSampleBytes int64) ([]byte, error) {
+	return TrainDictionaryWithLevel(root, maxSamples, maxSampleBytes, zstd.SpeedDefault)
+}
+
+// TrainDictionaryWithLevel is like TrainDictionary but takes the zstd level
+// used for the dictionary build step.
+func TrainDictionaryWithLevel(root string, maxSamples int, maxSampleBytes int64, level zstd.EncoderLevel) ([]byte, error) {
 	if maxSamples <= 0 {
 		maxSamples = defaultMaxSamples
 	}
@@ -87,7 +96,7 @@ func TrainDictionary(root string, maxSamples int, maxSampleBytes int64) ([]byte,
 		ID:       1,
 		Contents: samples,
 		History:  history,
-		Level:    zstd.SpeedDefault,
+		Level:    level,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("store.TrainDictionary: build: %w", err)
