@@ -5,6 +5,16 @@ set -euo pipefail
 #
 # All progress/debug output goes to stderr so that stdout contains
 # only the markdown table, enabling:  ./run_bench.sh >> RESULTS.md
+#
+# On macOS, the script self-wraps in `caffeinate -di` to prevent display
+# sleep / idle throttling during the benchmark. Set NO_CAFFEINATE=1 to opt
+# out (e.g. when running under another wrapper or in CI).
+
+if [[ -z "${BENCH_CAFFEINATED:-}" && -z "${NO_CAFFEINATE:-}" ]] \
+    && command -v caffeinate >/dev/null 2>&1; then
+    export BENCH_CAFFEINATED=1
+    exec caffeinate -di -- bash "$0" "$@"
+fi
 
 PLAYGROUND="$(cd "$(dirname "$0")" && pwd -P)"
 COMPARE="$PLAYGROUND/compare_on_repo.sh"

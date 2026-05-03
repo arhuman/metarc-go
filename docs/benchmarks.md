@@ -5,6 +5,9 @@ archived with `marc` vs `tar+zstd`, on the same machine.
 
 ## Changelog
 
+2026-05-03: **Bench methodology changed — old timing tables are not directly comparable.**
+`scripts/run_bench.sh` and `scripts/compare_on_repo.sh` now report the **median of 3 timed runs** after **1 untimed warmup**, with the OS page cache **primed** for each run (every input file read once before timing). On macOS the script self-wraps in `caffeinate -di` to prevent display-sleep / idle throttling. Run-to-run variance dropped from ~30% under the old single-run methodology to under 3%. Side effect: numbers from this date forward will systematically differ from earlier tables — usually a small drop on tar+zstd (which benefited disproportionately from cold-cache disk reads in the old methodology) and a small rise on marc (which now pays consistent priming overhead). Size tables are unaffected; only timing tables need re-running before any direct before/after comparison.
+
 2026-04-23:  **Last updated** 
 Pin repository used in tests to a specific commit for reproducible results.
 (Means that comparing to previous results is meaningful)
@@ -60,6 +63,8 @@ _marc: metarc version v0.6.0-7-gc68d3c0-dirty (c68d3c0, 2026-04-24T15:55:29Z) | 
 > The speed advantage holds regardless of the baseline compressor.
 
 ### Time
+
+> ⚠️ The two timing tables below were captured with the **pre-2026-05-03 single-run methodology**. They are kept for historical reference but should not be compared directly against numbers from current `run_bench.sh --type time` output, which uses median-of-3 with cache priming and a warmup pass. See the 2026-05-03 changelog entry above. Re-run on the same machine to refresh.
 
 #### vs tar+zstd
 

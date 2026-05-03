@@ -26,23 +26,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 MARC="$SCRIPT_DIR/../bin/marc"
 
-# --- helpers (same as run_bench.sh) ---
+source "$SCRIPT_DIR/lib/bench-helpers.sh"
 
 log() { :; }  # redefined after arg parsing
-
-file_bytes() { wc -c < "$1" | tr -d ' '; }
-
-fmt_bytes() {
-    python3 -c "
-b = $1
-if   b >= 1073741824: print(f'{b/1073741824:.1f}G')
-elif b >= 1048576:    print(f'{b/1048576:.1f}M')
-elif b >= 1024:       print(f'{b/1024:.1f}K')
-else:                 print(f'{b}B')
-"
-}
-
-human() { du -sh "$1" 2>/dev/null | cut -f1; }
 
 # --- parse args ---
 
@@ -83,6 +69,14 @@ if [[ "$NAME" == "header" && "$REPO" == "header" ]]; then
     MARC_VERSION=$("$MARC" --version 2>&1 || echo "unknown")
     TAR_VERSION=$(tar --version 2>/dev/null | head -1 || echo "unknown")
     echo "_marc: ${MARC_VERSION} | tar: ${TAR_VERSION}_"
+    if [[ "$TYPE" == "time" || "$TYPE" == "legacy" ]]; then
+        OS_VER=$(sw_vers -productVersion 2>/dev/null || uname -sr)
+        CPU=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)
+        CORES=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo "?")
+        MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+        MEM=$(awk -v b="$MEM_BYTES" 'BEGIN{ if (b > 0) printf "%dG", b/1073741824; else print "?" }')
+        echo "_host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: median of 3 runs after 1 warmup, page cache primed_"
+    fi
     echo ""
     case "$TYPE" in
         size)
@@ -118,6 +112,8 @@ else
     tar_cmd()         { tar czf "$TAR_FILE" -C "$WORKDIR" "$NAME" 2>/dev/null; }
     tar_extract_cmd() { tar xzf "$TAR_FILE" -C "$TAR_EXTRACT_DIR" 2>/dev/null; }
 fi
+marc_archive_cmd() { "$MARC" archive "$MARC_FILE" "$DIR" 2>/dev/null; }
+marc_extract_cmd() { "$MARC" extract "$MARC_FILE" -C "$DIR2" 2>/dev/null; }
 
 # cleanup from previous run
 rm -rf "$DIR" "$DIR2" "$TAR_EXTRACT_DIR" "$TAR_FILE" "$MARC_FILE"
@@ -138,25 +134,27 @@ fi
 ORIG_SIZE=$(human "$DIR")
 FILE_COUNT=$(find "$DIR" -type f | wc -l | tr -d ' ')
 
-# 3. tar archive + extract
+# 3. tar archive + extract (median of 3 with cache priming + warmup)
 log "  tar+${COMPRESSION}..."
-TAR_TIME=$( { time tar_cmd; } 2>&1 | grep real | awk '{print $2}' )
+TAR_TIME=$(time_median "$DIR" 'rm -f "$TAR_FILE"' 'tar_cmd')
 TAR_BYTES=$(file_bytes "$TAR_FILE")
 TAR_SIZE=$(fmt_bytes "$TAR_BYTES")
-mkdir "$TAR_EXTRACT_DIR"
-TAR_EXTRACT_TIME=$( { time tar_extract_cmd; } 2>&1 | grep real | awk '{print $2}' )
+TAR_EXTRACT_TIME=$(time_median "$TAR_FILE" \
+    'rm -rf "$TAR_EXTRACT_DIR" && mkdir "$TAR_EXTRACT_DIR"' \
+    'tar_extract_cmd')
 rm -rf "$TAR_EXTRACT_DIR"
 
-# 4. marc archive
+# 4. marc archive (median of 3 with cache priming + warmup)
 log "  marc archive..."
-METARC_TIME=$( { time "$MARC" archive "$MARC_FILE" "$DIR" 2>/dev/null; } 2>&1 | grep real | awk '{print $2}' )
+METARC_TIME=$(time_median "$DIR" 'rm -f "$MARC_FILE"' 'marc_archive_cmd')
 MARC_BYTES=$(file_bytes "$MARC_FILE")
 MARC_SIZE=$(fmt_bytes "$MARC_BYTES")
 
-# 5. Round-trip verification (marc extract timed)
+# 5. Round-trip verification (marc extract timed, median of 3)
 log "  verifying round-trip..."
-mkdir "$DIR2"
-MARC_EXTRACT_TIME=$( { time "$MARC" extract "$MARC_FILE" -C "$DIR2" 2>/dev/null; } 2>&1 | grep real | awk '{print $2}' )
+MARC_EXTRACT_TIME=$(time_median "$MARC_FILE" \
+    'rm -rf "$DIR2" && mkdir "$DIR2"' \
+    'marc_extract_cmd')
 if diff -rq "$DIR" "$DIR2" > /dev/null 2>&1; then
     ROUNDTRIP="OK"
 else
