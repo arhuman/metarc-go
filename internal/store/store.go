@@ -362,6 +362,15 @@ func (w *Writer) writeFile(ctx context.Context, e marc.Entry, nameID, parentID i
 // It iterates the transform registry, calling Apply on each applicable transform
 // until one returns handled=true. If none handles it, the file is written raw.
 func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, parentID int64, mode uint32, mtimeNs int64, uid, gid uint32, sha [32]byte) error {
+	// Align solid blocks on extension boundaries: archive.go pre-sorts files by
+	// extension, so a flush-on-change rule keeps each block extension-pure and
+	// preserves cross-file redundancy inside one zstd context.
+	if w.solidAcc != nil {
+		if err := w.solidAcc.setExtension(filepath.Ext(e.RelPath)); err != nil {
+			return err
+		}
+	}
+
 	// Do not set sourceSHA yet — transforms write their own blobs and
 	// the original SHA must not be associated with transformed content.
 	// sourceSHA is set only for raw (untransformed) writes below.

@@ -126,6 +126,57 @@ func TestSolidBlock_roundtrip(t *testing.T) {
 	}
 }
 
+// TestSolidBlock_extensionFlushesBlock verifies that a change in file
+// extension flushes the current solid block, even when the cumulative size
+// is well under the configured block threshold.
+func TestSolidBlock_extensionFlushesBlock(t *testing.T) {
+	tmp := t.TempDir()
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.Mkdir(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two files per extension; total bytes per ext are tiny vs the 1 MiB
+	// block size. Without ext-aware flushing all four files share one block.
+	files := []struct {
+		name    string
+		content []byte
+	}{
+		{"a1.go", bytes.Repeat([]byte("aa"), 32)},
+		{"a2.go", bytes.Repeat([]byte("ab"), 32)},
+		{"b1.txt", bytes.Repeat([]byte("ba"), 32)},
+		{"b2.txt", bytes.Repeat([]byte("bb"), 32)},
+	}
+
+	marcPath := filepath.Join(tmp, "ext_align.marc")
+	w, err := OpenWriter(marcPath, WithSolidBlockSize(1<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	for _, f := range files {
+		e := createTestFile(t, srcDir, f.name, f.content)
+		if err := w.WriteEntry(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := OpenReader(marcPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+
+	count := r.QuerySolidBlockCount()
+	if count != 2 {
+		t.Fatalf("expected 2 solid blocks (one per extension), got %d", count)
+	}
+}
+
 // TestQuerySolidBlockCount_noSolidBlocks verifies that a plain (non-solid) archive
 // returns 0.
 func TestQuerySolidBlockCount_noSolidBlocks(t *testing.T) {

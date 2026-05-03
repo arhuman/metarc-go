@@ -17,6 +17,24 @@ type solidAccumulator struct {
 	buf          []byte        // concatenated raw blob data
 	pending      []pendingBlob // blobs in current block
 	blockCounter int64         // incrementing block ID
+	currentExt   string        // file extension shared by blobs in the current block
+	extInit      bool          // currentExt has been set at least once
+}
+
+// setExtension declares the extension of blobs that are about to be added.
+// If the new extension differs from the one in flight, the current block is
+// flushed first so that each block contains blobs of a single extension. The
+// archive pipeline already sorts files by extension; this rule prevents a
+// boundary file from straddling two languages and weakening zstd's context.
+func (sa *solidAccumulator) setExtension(ext string) error {
+	if sa.extInit && ext != sa.currentExt && len(sa.buf) > 0 {
+		if err := sa.flush(); err != nil {
+			return fmt.Errorf("solidAccumulator.setExtension: flush: %w", err)
+		}
+	}
+	sa.currentExt = ext
+	sa.extInit = true
+	return nil
 }
 
 type pendingBlob struct {
