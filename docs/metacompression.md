@@ -482,6 +482,8 @@ Dedup currently operates within a single archive. A shared content-addressable b
 | ID | Class | Lossless | Status |
 |----|-------|----------|--------|
 | `go-line-subst/v1` | Line substitution | Yes | Default |
+| `py-line-subst/v1` | Line substitution | Yes | Default |
+| `js-line-subst/v1` | Line substitution | Yes | **WIP — not registered** (hand-curated dict gave no measurable gain on bench corpora; awaits a frequency-counted `js_token.txt` rebuild or supersession by per-extension trained zstd dicts) |
 | `dedup/v1` | Exact dedup | Yes | Default |
 | `json-canonical/v1` | Canonical form | No | Opt-in |
 | `license-canonical/v1` | Canonical form | No | Opt-in |

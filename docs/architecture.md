@@ -81,6 +81,8 @@ metarc/
 │   │   └── transforms/
 │   │       ├── dedup.go              dedup/v1 (lossless, default)
 │   │       ├── goline/goline.go      go-line-subst/v1 (lossless, default)
+│   │       ├── pyline/pyline.go      py-line-subst/v1 (lossless, default)
+│   │       ├── jsline/jsline.go      js-line-subst/v1 (lossless, WIP — not registered)
 │   │       ├── json/canonical.go     json-canonical/v1 (opt-in)
 │   │       ├── license/canonical.go  license-canonical/v1 (opt-in)
 │   │       ├── logtempl/template.go  log-template/v1 (opt-in)
@@ -357,6 +359,8 @@ type Transform interface {
 | ID | Mode | Applicable | Gain model | CPU model |
 |----|------|-----------|------------|-----------|
 | `go-line-subst/v1` | Lossless, **default** | `.go` files > 0B | `size/10` | `size/1024` |
+| `py-line-subst/v1` | Lossless, **default** | `.py` files > 0B | `size/10` | `size/1024` |
+| `js-line-subst/v1` | Lossless, **WIP — not registered** | `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs` > 0B | `size/10` | `size/1024` |
 | `dedup/v1` | Lossless, **default** | Any file > 0B | `size` | `size/1024` |
 | `json-canonical/v1` | Lossless*, opt-in | `.json` ≤10MB | `size/4` | `size/512` |
 | `license-canonical/v1` | Lossy, opt-in | `LICENSE*` filenames | `size` | `512` |
@@ -373,6 +377,10 @@ Apply:   read .go file line by line, strip leading whitespace, look up in 105-en
 Reverse: read blob line by line, find \x00 marker, expand from dictionary.
 ```
 Benchmarked at +9.6% per-file compression gain, neutral on solid blocks.
+
+**py-line-subst/v1** — same mechanism as `go-line-subst/v1`, applied to `.py` files with a 139-entry dictionary covering stdlib imports, special-method stubs, common return idioms, typing/dataclass/pytest decorators, and license headers. Indentation-insensitive: leading tabs/spaces are captured as a prefix and re-emitted before the token, so dictionary lines hit regardless of nesting depth.
+
+**js-line-subst/v1** — same mechanism, ported to `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs` with a 135-entry dictionary. **Implemented but not registered in `plan.Registry`.** Bench runs showed near-zero ratio gain on JS/TS loss corpora because: (a) the dictionary was assembled from intuition rather than from a frequency pass on a real corpus (the goline dict was built from `.claude/doc/go_token.txt`; the equivalent `js_token.txt` was never produced), and (b) JS/TS source has high format/quote-style variance (Prettier vs no-Prettier, single vs double quotes, semi vs no-semi) that breaks exact-line lookup. The transform stays in the tree so it can be re-registered after a corpus-counted dict rebuild, or removed once Item 4 of the compression roadmap (per-extension trained zstd dicts) lands.
 
 ### Application / Reversal
 
