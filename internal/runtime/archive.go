@@ -48,8 +48,14 @@ type ArchiveOpts struct {
 	ZstdLevels store.ZstdConfig
 }
 
-// DefaultSolidBlockSize is the default solid block threshold (4 MB).
-const DefaultSolidBlockSize = 4 * 1024 * 1024
+// DefaultSolidBlockSize is the default solid block threshold (16 MiB).
+//
+// Larger blocks keep more cross-file context inside a single zstd frame,
+// which is what makes solid mode pay off on source-code corpora. The 16 MiB
+// choice is bounded by the Phase-6 256 MiB peak-RSS ceiling: at concurrency
+// one (single-writer pipeline, ADR-008), one in-flight block plus its
+// compressed copy sits comfortably under the budget.
+const DefaultSolidBlockSize = 16 * 1024 * 1024
 
 // Archive creates a .marc archive of the directory tree rooted at root.
 // compressor is the blob compression method: "zstd" (default) or "none".

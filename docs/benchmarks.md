@@ -11,18 +11,18 @@ archived with `marc` vs `tar+zstd`, on the same machine.
 
 `./scripts/run_bench.sh --type size`
 
-_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.8.0-3-g20bdb86a-dirty (20bdb86a, 2026-05-03T13:30:45Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 81.1M | 75.3M | 92.8% |
-| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 96.5% |
-| vuejs | 9.9M | 728 | 3.3M | 3.2M | 97.0% |
-| numpy |  50M | 2364 | 18.4M | 17.7M | 96.0% |
-| redis |  28M | 1780 | 8.9M | 8.4M | 94.3% |
-| bootstrap |  27M | 816 | 13.9M | 13.4M | 96.6% |
-| express | 1.6M | 238 | 345.7K | 332.5K | 96.2% |
-| react |  65M | 6884 | 18.5M | 17.3M | 93.6% |
+| kubernetes | 376M | 29838 | 81.1M | 74.1M | 91.4% |
+| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 99.1% |
+| vuejs | 9.8M | 728 | 3.3M | 3.2M | 97.4% |
+| numpy |  50M | 2364 | 18.4M | 17.5M | 95.3% |
+| redis |  29M | 1780 | 8.9M | 8.4M | 93.7% |
+| bootstrap |  27M | 816 | 13.9M | 13.3M | 96.0% |
+| express | 1.6M | 238 | 345.6K | 339.3K | 98.2% |
+| react |  65M | 6884 | 18.5M | 17.1M | 92.4% |
 
 
 #### vs tar+gz
@@ -51,19 +51,19 @@ _marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) |
 
  `./scripts/run_bench.sh --type time`
 
-_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.8.0-3-g20bdb86a-dirty (20bdb86a, 2026-05-03T13:30:45Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 _host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold)_
 
 | Repo | Files | tar+zstd arc | marc arc | tar+zstd ext | marc ext | marc speedup (arc) |
 |------|-------|------------------------|----------|-----------------------|----------|--------------------|
-| kubernetes | 29838 | 0m14.320s | 0m7.881s | 0m11.819s | 0m4.935s | 1.8× faster |
-| docker-compose | 702 | 0m0.611s | 0m0.157s | 0m0.494s | 0m0.147s | 3.9× faster |
-| vuejs | 728 | 0m0.573s | 0m0.228s | 0m0.472s | 0m0.136s | 2.5× faster |
-| numpy | 2364 | 0m1.408s | 0m0.908s | 0m0.956s | 0m0.369s | 1.6× faster |
-| redis | 1780 | 0m1.098s | 0m0.609s | 0m0.770s | 0m0.279s | 1.8× faster |
-| bootstrap | 816 | 0m0.639s | 0m0.331s | 0m0.503s | 0m0.159s | 1.9× faster |
-| express | 238 | 0m0.352s | 0m0.087s | 0m0.325s | 0m0.068s | 4× faster |
-| react | 6884 | 0m3.466s | 0m1.339s | 0m2.481s | 0m0.948s | 2.6× faster |
+| kubernetes | 29838 | 0m14.632s | 0m7.369s | 0m12.478s | 0m5.011s | 2× faster |
+| docker-compose | 702 | 0m0.560s | 0m0.188s | 0m0.440s | 0m0.134s | 3× faster |
+| vuejs | 728 | 0m0.595s | 0m0.254s | 0m0.403s | 0m0.137s | 2.3× faster |
+| numpy | 2364 | 0m1.355s | 0m0.957s | 0m0.968s | 0m0.370s | 1.4× faster |
+| redis | 1780 | 0m1.200s | 0m0.674s | 0m0.792s | 0m0.285s | 1.8× faster |
+| bootstrap | 816 | 0m0.644s | 0m0.346s | 0m0.500s | 0m0.153s | 1.9× faster |
+| express | 238 | 0m0.383s | 0m0.098s | 0m0.281s | 0m0.065s | 3.9× faster |
+| react | 6884 | 0m3.455s | 0m1.401s | 0m2.539s | 0m0.951s | 2.5× faster |
 
 #### vs tar+gz
 
@@ -165,6 +165,32 @@ Append `--mode log` to see progress output, or `--mode test` to verify round-tri
 ---
 
 ## Changelog
+
+2026-05-03 (Item 3): **Solid blocks: 4 MiB → 16 MiB, with extension-aligned flush.**
+The default solid block size moves from 4 MiB to 16 MiB and the accumulator now
+flushes on every file-extension change (the archive pipeline already sorts by
+extension, so each block ends up extension-pure). Larger, single-language blocks
+keep more cross-file context inside one zstd frame.
+
+Effect on the size table vs the previous `--type size` run (zstd baseline):
+- kubernetes: 92.8% → 91.4%  (−1.4 pp; the biggest absolute win)
+- react:      93.6% → 92.4%  (−1.2 pp)
+- numpy:      96.0% → 95.3%  (−0.7 pp)
+- bootstrap:  96.6% → 96.0%  (−0.6 pp)
+- redis:      94.3% → 93.7%  (−0.6 pp)
+- vuejs:      97.0% → 97.4%  (+0.4 pp)
+- express:    96.2% → 98.2%  (+2.0 pp)
+- docker-compose: 96.5% → 99.1%  (+2.6 pp)
+
+Where it pays off: corpora with enough material per extension to fill a 16 MiB
+block (kubernetes, react, numpy). Where it regresses: tiny corpora (express,
+docker-compose) where total bytes per extension are far below the new block
+threshold, so the bigger block doesn't add context but the per-block framing
+overhead is a larger fraction of the archive. Item 4 (per-extension dicts) is
+the planned fix for the small-corpus regression.
+
+The gz size and time tables are pending a re-run; only the zstd tables above
+were refreshed.
 
 2026-05-03 (later): **Cold cache is now the default; `--hot` opts into warm methodology.**
 The earlier 2026-05-03 change (warm-cache methodology) had an unintended side effect: it systematically favoured I/O-bound tools (tar+zstd reading from RAM) over CPU-bound tools (marc), making "marc vs tar+zstd" comparisons misleading for users who archive cold files. The default is now back to cold cache (matches the methodology of the pre-2026-05-03 historical tables, so before/after comparisons are honest). Pass `--hot` to use warm-cache low-variance methodology when tracking small CPU-pipeline regressions during development.
