@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -74,11 +75,37 @@ func inspectOverview(cmd *cobra.Command, marcPath string) error {
 		cmd.Printf("Solid blocks:         %d\n", solidCount)
 	}
 
+	printZstdLevels(cmd, r)
+
 	if err := inspectArchiveSizes(cmd, marcPath, ov.OriginalSize); err != nil {
 		slog.Debug("skipping archive layout (footer not readable)", "err", err)
 	}
 
 	return nil
+}
+
+// printZstdLevels surfaces the zstd levels recorded in the meta table when
+// the archive includes them. Older archives without these keys are silently
+// skipped.
+func printZstdLevels(cmd *cobra.Command, r *store.Reader) {
+	keys := []struct{ label, key string }{
+		{"blob", "zstd_level_blob"},
+		{"solid", "zstd_level_solid"},
+		{"catalog", "zstd_level_catalog"},
+		{"dict", "zstd_level_dict"},
+	}
+	var parts []string
+	for _, k := range keys {
+		v, ok, err := r.QueryMeta(k.key)
+		if err != nil || !ok {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", k.label, v))
+	}
+	if len(parts) == 0 {
+		return
+	}
+	cmd.Printf("Zstd levels:          %s\n", strings.Join(parts, " "))
 }
 
 // inspectArchiveSizes reads the footer and prints blob region / catalog / overhead sizes.

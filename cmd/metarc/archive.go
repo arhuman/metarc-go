@@ -7,8 +7,57 @@ import (
 
 	"github.com/arhuman/metarc-go/internal/runtime"
 	"github.com/arhuman/metarc-go/internal/store"
+	"github.com/klauspost/compress/zstd"
 	"github.com/spf13/cobra"
 )
+
+// minZstdLevel and maxZstdLevel are the inclusive bounds accepted by
+// klauspost/compress/zstd: SpeedFastest=1 .. SpeedBestCompression=11.
+const (
+	minZstdLevel = 1
+	maxZstdLevel = 11
+)
+
+// zstdLevelFromInt maps a 1..11 integer to a zstd.EncoderLevel. It returns an
+// error for out-of-range input.
+func zstdLevelFromInt(n int) (zstd.EncoderLevel, error) {
+	if n < minZstdLevel || n > maxZstdLevel {
+		return 0, fmt.Errorf("zstd level must be between %d and %d, got %d", minZstdLevel, maxZstdLevel, n)
+	}
+	return zstd.EncoderLevelFromZstd(n), nil
+}
+
+// resolveZstdLevels translates the CLI level flags into a store.ZstdConfig.
+// global is the value of --zstd-level (-1 = unset). The four perChunk values
+// are the per-chunk overrides (-1 = unset, takes precedence over global).
+// Any chunk left unset returns 0 in that field, signalling "use the runtime
+// default" downstream.
+func resolveZstdLevels(global, blob, solid, catalog, dict int) (store.ZstdConfig, error) {
+	var cfg store.ZstdConfig
+	pick := func(perChunk int) (zstd.EncoderLevel, error) {
+		if perChunk >= 0 {
+			return zstdLevelFromInt(perChunk)
+		}
+		if global >= 0 {
+			return zstdLevelFromInt(global)
+		}
+		return 0, nil // 0 means "leave default"
+	}
+	var err error
+	if cfg.Blob, err = pick(blob); err != nil {
+		return cfg, fmt.Errorf("--zstd-level-blob: %w", err)
+	}
+	if cfg.Solid, err = pick(solid); err != nil {
+		return cfg, fmt.Errorf("--zstd-level-solid: %w", err)
+	}
+	if cfg.Catalog, err = pick(catalog); err != nil {
+		return cfg, fmt.Errorf("--zstd-level-catalog: %w", err)
+	}
+	if cfg.Dict, err = pick(dict); err != nil {
+		return cfg, fmt.Errorf("--zstd-level-dict: %w", err)
+	}
+	return cfg, nil
+}
 
 // newArchiveCmd returns the `metarc archive` subcommand.
 //
@@ -29,6 +78,7 @@ func newArchiveCmd() *cobra.Command {
 	var noSolid bool
 	var solidBlockSize string
 	var disableTransforms []string
+	var zstdLevel, zstdLevelBlob, zstdLevelSolid, zstdLevelCatalog, zstdLevelDict int
 
 	cmd := &cobra.Command{
 		Use:   "archive <output.marc> <source-dir> [source-dir...]",
@@ -49,10 +99,15 @@ siblings under the destination. Two sources may not share the same basename.`,
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			keep := keepPlanLog || explain
+			zCfg, err := resolveZstdLevels(zstdLevel, zstdLevelBlob, zstdLevelSolid, zstdLevelCatalog, zstdLevelDict)
+			if err != nil {
+				return err
+			}
 			opts := runtime.ArchiveOpts{
 				DictCompress:       dictCompress,
 				Workers:            workers,
 				DisabledTransforms: disableTransforms,
+				ZstdLevels:         zCfg,
 			}
 			if !noSolid {
 				size, err := parseByteSize(solidBlockSize)
@@ -65,7 +120,6 @@ siblings under the destination. Two sources may not share the same basename.`,
 			marcPath := args[0]
 			sources := args[1:]
 
-			var err error
 			if len(sources) == 1 {
 				err = runtime.ArchiveWithOpts(cmd.Context(), marcPath, sources[0], compressor, keep, opts)
 			} else {
@@ -89,6 +143,12 @@ siblings under the destination. Two sources may not share the same basename.`,
 	cmd.Flags().BoolVar(&noSolid, "no-solid", false, "disable solid block compression (use per-blob compression)")
 	cmd.Flags().StringVar(&solidBlockSize, "solid-block-size", "4MB", "solid block size threshold")
 	cmd.Flags().StringSliceVar(&disableTransforms, "disable-transform", nil, `transform IDs to skip (e.g. "go-line-subst/v1")`)
+
+	cmd.Flags().IntVar(&zstdLevel, "zstd-level", -1, "zstd encoder level (1..11) applied to all chunk types; per-chunk overrides take precedence")
+	cmd.Flags().IntVar(&zstdLevelBlob, "zstd-level-blob", -1, "zstd encoder level for per-blob chunks (1..11); overrides --zstd-level")
+	cmd.Flags().IntVar(&zstdLevelSolid, "zstd-level-solid", -1, "zstd encoder level for solid blocks (1..11); overrides --zstd-level")
+	cmd.Flags().IntVar(&zstdLevelCatalog, "zstd-level-catalog", -1, "zstd encoder level for the catalog chunk (1..11); overrides --zstd-level")
+	cmd.Flags().IntVar(&zstdLevelDict, "zstd-level-dict", -1, "zstd encoder level for dictionary build/encode (1..11); overrides --zstd-level")
 
 	return cmd
 }

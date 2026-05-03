@@ -175,6 +175,16 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 		opt(w)
 	}
 
+	// Record the resolved zstd levels in the meta table so readers/inspect
+	// can report how an archive was produced. Older archives without these
+	// keys remain readable; consumers must tolerate missing rows.
+	if err := writeZstdMeta(db, w.zstdCfg); err != nil {
+		_ = db.Close()
+		_ = outFile.Close()
+		_ = os.Remove(dbPath)
+		return nil, fmt.Errorf("store.OpenWriter: meta zstd levels: %w", err)
+	}
+
 	// Create solid accumulator if solid block mode was requested.
 	if w.solidSize > 0 {
 		w.solidAcc = &solidAccumulator{
@@ -689,6 +699,32 @@ func (w *Writer) finalize() error {
 		return fmt.Errorf("write footer: %w", err)
 	}
 
+	return nil
+}
+
+// writeZstdMeta records the per-chunk-type zstd levels in the catalog meta
+// table. Keys: zstd_level_blob, zstd_level_solid, zstd_level_catalog,
+// zstd_level_dict. Values are the klauspost level names (fastest/default/
+// better/best) stored as TEXT. This is additive: legacy archives without
+// these keys must still inspect/extract cleanly.
+func writeZstdMeta(db *sql.DB, cfg ZstdConfig) error {
+	rows := []struct {
+		key   string
+		level zstd.EncoderLevel
+	}{
+		{"zstd_level_blob", cfg.Blob},
+		{"zstd_level_solid", cfg.Solid},
+		{"zstd_level_catalog", cfg.Catalog},
+		{"zstd_level_dict", cfg.Dict},
+	}
+	for _, r := range rows {
+		if _, err := db.Exec(
+			`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`,
+			r.key, r.level.String(),
+		); err != nil {
+			return fmt.Errorf("write %s: %w", r.key, err)
+		}
+	}
 	return nil
 }
 

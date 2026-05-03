@@ -515,6 +515,19 @@ func (r *Reader) QueryOverview() (Overview, error) {
 	return ov, nil
 }
 
+// QueryMeta returns the value of a meta-table key. ok is false when the key
+// is absent (older archives may not record every key).
+func (r *Reader) QueryMeta(key string) (value string, ok bool, err error) {
+	row := r.db.QueryRow(`SELECT value FROM meta WHERE key = ?`, key)
+	if scanErr := row.Scan(&value); scanErr != nil {
+		if scanErr == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("store.QueryMeta %s: %w", key, scanErr)
+	}
+	return value, true, nil
+}
+
 // Close releases all resources held by the reader.
 func (r *Reader) Close() error {
 	var firstErr error
