@@ -41,6 +41,11 @@ type ArchiveOpts struct {
 	Workers            int      // 0 = runtime.NumCPU()
 	SolidBlockSize     int64    // 0 = disabled; >0 = solid mode with this threshold in bytes
 	DisabledTransforms []string // transform IDs to skip (e.g. "go-line-subst/v1")
+	// ZstdLevels carries per-chunk-type zstd encoder settings. The zero value
+	// means "use store.DefaultZstdConfig()". Callers may set ZstdLevels to
+	// override individual levels; any zero field within ZstdLevels is replaced
+	// with the corresponding default at archive time.
+	ZstdLevels store.ZstdConfig
 }
 
 // DefaultSolidBlockSize is the default solid block threshold (4 MB).
@@ -141,7 +146,8 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 		// keeps the code simple while still benefiting cross-file dedup.
 		trainRoot := roots[0]
 		slog.Info("training zstd dictionary (prescan)", "root", trainRoot)
-		dict, err := store.TrainDictionary(trainRoot, 0, 0)
+		dictLevel := resolveZstdConfig(aopts.ZstdLevels).Dict
+		dict, err := store.TrainDictionaryWithLevel(trainRoot, 0, 0, dictLevel)
 		if err != nil {
 			slog.Warn("dict training failed, continuing without dictionary", "err", err)
 		} else if dict != nil {
@@ -161,6 +167,8 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 	if aopts.SolidBlockSize > 0 {
 		opts = append(opts, store.WithSolidBlockSize(aopts.SolidBlockSize))
 	}
+
+	opts = append(opts, store.WithZstdConfig(resolveZstdConfig(aopts.ZstdLevels)))
 
 	w, err := store.OpenWriter(marcPath, opts...)
 	if err != nil {
@@ -338,6 +346,26 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 
 	slog.Info("archive complete", "entries", count)
 	return nil
+}
+
+// resolveZstdConfig fills any zero field in user with the corresponding
+// default from store.DefaultZstdConfig. WindowSize=0 means "library default"
+// and is left as-is.
+func resolveZstdConfig(user store.ZstdConfig) store.ZstdConfig {
+	def := store.DefaultZstdConfig()
+	if user.Blob == 0 {
+		user.Blob = def.Blob
+	}
+	if user.Solid == 0 {
+		user.Solid = def.Solid
+	}
+	if user.Catalog == 0 {
+		user.Catalog = def.Catalog
+	}
+	if user.Dict == 0 {
+		user.Dict = def.Dict
+	}
+	return user
 }
 
 // hashFile computes the BLAKE3-256 hash of a file.
