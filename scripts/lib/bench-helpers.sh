@@ -55,7 +55,10 @@ parse_seconds() {
 
 # prime_cache <dir|file>: read every file under the path so the OS page cache
 # is warm before we measure. Errors are ignored (best-effort warmup).
+# In cold mode (BENCH_COLD=1), this is a no-op — flush_cache handles the
+# inverse goal of evicting cache before each measurement.
 prime_cache() {
+    [[ "${BENCH_COLD:-0}" == "1" ]] && return 0
     local target="$1"
     if [[ -d "$target" ]]; then
         find "$target" -type f -print0 2>/dev/null \
@@ -65,27 +68,87 @@ prime_cache() {
     fi
 }
 
+# flush_cache: evict the OS page cache so the next read goes to disk.
+# Portable across macOS (`purge`) and Linux (`drop_caches`). Both require
+# root, so the script tries unprivileged first and falls back to `sudo -n`
+# (non-interactive). If that also fails, prints one warning and continues
+# in degraded mode (warmer-than-fully-cold).
+_BENCH_FLUSH_WARNED=0
+_bench_flush_warn() {
+    [[ "$_BENCH_FLUSH_WARNED" == "1" ]] && return
+    _BENCH_FLUSH_WARNED=1
+    echo "[bench] WARNING: cold-cache flush failed ($1); --cold results may be partially warm" >&2
+}
+
+flush_cache() {
+    # Parent script may set BENCH_COLD_DEGRADED=1 after detecting sudo is
+    # unavailable, to suppress the redundant per-iteration warning that
+    # would otherwise fire from each time_median subshell.
+    [[ "${BENCH_COLD_DEGRADED:-0}" == "1" ]] && return 0
+
+    case "$(uname -s)" in
+        Darwin)
+            if ! command -v purge >/dev/null 2>&1; then
+                _bench_flush_warn "purge not found"
+                return 0
+            fi
+            # purge typically needs root on modern macOS; try unprivileged
+            # first in case the user's setup permits it, then sudo -n.
+            purge 2>/dev/null && return 0
+            sudo -n purge 2>/dev/null && return 0
+            _bench_flush_warn "sudo -n purge denied (run interactively first or configure passwordless sudo)"
+            ;;
+        Linux)
+            sync 2>/dev/null
+            sudo -n sh -c 'echo 3 > /proc/sys/vm/drop_caches' 2>/dev/null && return 0
+            _bench_flush_warn "sudo -n drop_caches denied"
+            ;;
+        *)
+            _bench_flush_warn "unsupported OS $(uname -s)"
+            ;;
+    esac
+    return 0
+}
+
 # time_median <prime_target> <prep_cmd> <timed_cmd> [n]
 #
-# Runs <timed_cmd> n=3 times (default) after one untimed warmup. Before each
-# run, calls <prep_cmd> (typically rm/mkdir of the output) and primes the
-# page cache for <prime_target>. Echoes the median wall-clock as "0mSS.SSSs".
+# Runs <timed_cmd> n=3 times (default) and echoes the median wall-clock as
+# "0mSS.SSSs". Before each run, calls <prep_cmd> (typically rm/mkdir of
+# the output).
+#
+# Default mode (BENCH_COLD unset / 0): warm cache.
+#   - 1 untimed warmup run (eats dyld/JIT/code-sign cost).
+#   - prime_cache primes <prime_target> before warmup AND each timed run.
+#   - Useful for low-variance regression tracking; the OS-cache state is
+#     held constant across iterations.
+#
+# Cold mode (BENCH_COLD=1): evict cache before each timed iteration.
+#   - No warmup (would defeat the cold-state purpose).
+#   - flush_cache instead of prime_cache.
+#   - Reflects realistic I/O-bound wall-clock for tools that do disk reads;
+#     CPU-bound tools see little difference vs warm.
 #
 # <prep_cmd> and <timed_cmd> are eval'd, so they can be function names or
 # full command strings. Use single-quoted args so $VARS expand at eval time.
 time_median() {
     local prime_target="$1" prep_cmd="$2" timed_cmd="$3"
     local n="${4:-3}"
-    local i start end dur
+    local i start end dur cold="${BENCH_COLD:-0}"
 
-    # Warmup: prep + run untimed. Eats dyld/JIT/code-sign cost.
-    prime_cache "$prime_target"
-    eval "$prep_cmd" >/dev/null 2>&1 || true
-    eval "$timed_cmd" >/dev/null 2>&1 || true
+    if [[ "$cold" != "1" ]]; then
+        # Warm-cache mode: 1 untimed warmup, then n timed runs after priming.
+        prime_cache "$prime_target"
+        eval "$prep_cmd" >/dev/null 2>&1 || true
+        eval "$timed_cmd" >/dev/null 2>&1 || true
+    fi
 
     local times=()
     for ((i = 0; i < n; i++)); do
-        prime_cache "$prime_target"
+        if [[ "$cold" == "1" ]]; then
+            flush_cache
+        else
+            prime_cache "$prime_target"
+        fi
         eval "$prep_cmd" >/dev/null 2>&1 || true
         start=$EPOCHREALTIME
         eval "$timed_cmd" >/dev/null 2>&1

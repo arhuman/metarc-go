@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./compare_on_repo.sh --name <name> --repo <repourl> [--mode log|test] [--compression zstd|gz] [--type size|time|legacy]
+# Usage: ./compare_on_repo.sh --name <name> --repo <repourl> [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--cold]
 #
 # Clones <repourl> into /tmp/<name>, archives with tar and marc,
 # extracts marc into /tmp/<name>2, compares, and prints one markdown
@@ -20,6 +20,13 @@ set -euo pipefail
 #   --type legacy       original columns: all info (default)
 #   --type size         size/ratio columns only
 #   --type time         timing columns only
+#
+# Cache mode:
+#   (default)    warm: prime the page cache before each timed run + 1 warmup
+#                (low variance; reflects CPU-bound speed)
+#   --cold       evict the page cache before each timed run (no warmup)
+#                (reflects realistic I/O-bound wall-clock; needs sudo on
+#                 macOS for `purge` and on Linux for drop_caches)
 #
 # Special case: --name header --repo header  → prints the table header.
 
@@ -47,13 +54,27 @@ while [[ $# -gt 0 ]]; do
         --compression) COMPRESSION="$2"; shift 2 ;;
         --type)        TYPE="$2"; shift 2 ;;
         --commit)      COMMIT="$2"; shift 2 ;;
+        --cold)        export BENCH_COLD=1; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
 if [[ -z "$NAME" || -z "$REPO" ]]; then
-    echo "Usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--mode log|test] [--compression zstd|gz] [--type size|time|legacy]" >&2
+    echo "Usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--cold]" >&2
     exit 1
+fi
+
+# In cold mode on macOS, prime sudo credentials upfront so subsequent
+# `sudo -n purge` calls in time_median subshells inherit the cached
+# credential. Without this, each subshell tries `sudo -n` and falls
+# through (TouchID/password sudo doesn't work non-interactively).
+# If the prime fails, set BENCH_COLD_DEGRADED so flush_cache silences
+# its per-iteration warning.
+if [[ "${BENCH_COLD:-0}" == "1" && "$(uname -s)" == "Darwin" ]]; then
+    if ! sudo -v 2>/dev/null; then
+        echo "[compare_on_repo] WARNING: sudo prime failed; --cold will run with warm cache" >&2
+        export BENCH_COLD_DEGRADED=1
+    fi
 fi
 
 # Define log() based on mode
@@ -75,7 +96,12 @@ if [[ "$NAME" == "header" && "$REPO" == "header" ]]; then
         CORES=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo "?")
         MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
         MEM=$(awk -v b="$MEM_BYTES" 'BEGIN{ if (b > 0) printf "%dG", b/1073741824; else print "?" }')
-        echo "_host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: median of 3 runs after 1 warmup, page cache primed_"
+        if [[ "${BENCH_COLD:-0}" == "1" ]]; then
+            METHODOLOGY="median of 3 runs, cache flushed before each run (cold)"
+        else
+            METHODOLOGY="median of 3 runs after 1 warmup, page cache primed (warm)"
+        fi
+        echo "_host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: ${METHODOLOGY}_"
     fi
     echo ""
     case "$TYPE" in

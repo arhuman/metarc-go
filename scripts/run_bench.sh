@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./run_bench.sh [--compression zstd|gz] [--type size|time|legacy]
+# Usage: ./run_bench.sh [--compression zstd|gz] [--type size|time|legacy] [--cold]
 #
 # All progress/debug output goes to stderr so that stdout contains
 # only the markdown table, enabling:  ./run_bench.sh >> RESULTS.md
+#
+# Cache mode (timing only):
+#   default   warm: prime cache + warmup, low variance, CPU-bound speed
+#   --cold    flush cache before each run, realistic I/O-bound wall-clock
+#             (needs sudo for `purge` on macOS or drop_caches on Linux)
 #
 # On macOS, the script self-wraps in `caffeinate -di` to prevent display
 # sleep / idle throttling during the benchmark. Set NO_CAFFEINATE=1 to opt
@@ -21,11 +26,13 @@ COMPARE="$PLAYGROUND/compare_on_repo.sh"
 
 COMPRESSION="zstd"
 TYPE="legacy"
+COLD_FLAG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --compression) COMPRESSION="$2"; shift 2 ;;
         --type)        TYPE="$2"; shift 2 ;;
+        --cold)        COLD_FLAG="--cold"; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -42,7 +49,19 @@ REPOS=(
     "https://github.com/facebook/react react 561ed529b3a6a16e5b2b76fa5ee86c09f959686c"
 )
 
-EXTRA_ARGS="--compression $COMPRESSION --type $TYPE"
+EXTRA_ARGS="--compression $COMPRESSION --type $TYPE $COLD_FLAG"
+
+# In cold mode, prompt for sudo upfront so subsequent flush_cache calls inherit
+# a cached credential instead of failing silently per-iteration. If the prime
+# fails, set BENCH_COLD_DEGRADED so flush_cache silences its per-iteration
+# warning rather than spamming stderr.
+if [[ "$COLD_FLAG" == "--cold" && "$(uname -s)" == "Darwin" ]]; then
+    echo "[run_bench] --cold mode: priming sudo credential for purge" >&2
+    if ! sudo -v 2>/dev/null; then
+        echo "[run_bench] WARNING: sudo prime failed; --cold will run with warm cache" >&2
+        export BENCH_COLD_DEGRADED=1
+    fi
+fi
 
 # Print table header
 "$COMPARE" --name header --repo header $EXTRA_ARGS

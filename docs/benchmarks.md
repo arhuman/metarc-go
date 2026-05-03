@@ -135,6 +135,7 @@ Outputs all columns combined (default if `--type` is omitted).
 |------|--------|---------|-------------|
 | `--type` | `size`, `time`, `legacy` | `legacy` | Selects output columns |
 | `--compression` | `zstd`, `gz` | `zstd` | Final compressor for tar baseline |
+| `--cold` | (flag) | off (warm) | Flush the OS page cache before each timed run. Reflects realistic I/O-bound wall-clock. Needs sudo for `purge` (macOS) or `drop_caches` (Linux); the script primes sudo once at startup so you get one TouchID / password prompt and the rest runs unattended. If sudo isn't available, falls back to warm-cache and prints one warning. |
 
 ### Single repo
 
