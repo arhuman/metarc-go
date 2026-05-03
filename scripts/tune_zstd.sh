@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./tune_zstd.sh --name <name> --repo <repourl> [--commit <sha>] [--keep-clone]
+# Usage: ./tune_zstd.sh --name <name> --repo <repourl> [--commit <sha>] [--keep-clone] [--hot]
 #
 # Sweeps marc's --zstd-level-{blob,solid,catalog} levels against a single
 # corpus, printing per-chunk gain vs the level-3 baseline. Stops the inner
@@ -9,6 +9,16 @@ set -euo pipefail
 # archive time, then moves on to the next chunk.
 #
 # Output: a markdown report on stdout. Progress on stderr.
+#
+# Cache mode:
+#   (default)  COLD: cache flushed before each timed run. Realistic
+#              wall-clock; matches scripts/run_bench.sh default. Needs
+#              sudo on macOS / Linux; falls back to warm with a warning
+#              if sudo isn't available.
+#   --hot      WARM: cache primed + 1 warmup. Lower variance — preferable
+#              when you specifically want to compare compression *levels*
+#              of the same tool (the level deltas can be smaller than the
+#              cold-cache noise floor).
 #
 # On macOS, the script self-wraps in `caffeinate -di` to prevent display
 # sleep / idle throttling during the run. Set NO_CAFFEINATE=1 to opt out.
@@ -37,14 +47,28 @@ while [[ $# -gt 0 ]]; do
         --repo)        REPO="$2"; shift 2 ;;
         --commit)      COMMIT="$2"; shift 2 ;;
         --keep-clone)  KEEP_CLONE=1; shift ;;
+        --hot)         export BENCH_HOT=1; shift ;;
         *) die "unknown option: $1" ;;
     esac
 done
 
-[[ -z "$NAME" || -z "$REPO" ]] && die "usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--keep-clone]"
+[[ -z "$NAME" || -z "$REPO" ]] && die "usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--keep-clone] [--hot]"
 [[ -x "$MARC" ]] || die "marc binary not found at $MARC; run 'make build' first"
 
 log() { echo "[tune_zstd] $*" >&2; }
+
+# Default cache mode is COLD. Prime sudo upfront on macOS so the
+# per-iteration `sudo -n purge` calls in time_median subshells succeed
+# silently. If the prime fails, set BENCH_FLUSH_DEGRADED so flush_cache
+# silences its per-iteration warning and the run quietly falls back to
+# warm cache. Skipped when --hot is requested.
+if [[ "${BENCH_HOT:-0}" != "1" && "$(uname -s)" == "Darwin" ]]; then
+    log "cold mode (default): priming sudo credential for purge"
+    if ! sudo -v 2>/dev/null; then
+        log "WARNING: sudo prime failed; cold mode will fall back to warm cache"
+        export BENCH_FLUSH_DEGRADED=1
+    fi
+fi
 
 # --- workspace ---
 
@@ -87,10 +111,18 @@ CORES=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo "?")
 MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
 MEM=$(awk -v b="$MEM_BYTES" 'BEGIN{ if (b > 0) printf "%dG", b/1073741824; else print "?" }')
 
+if [[ "${BENCH_HOT:-0}" == "1" ]]; then
+    METHODOLOGY="median of 3 runs after 1 warmup, page cache primed (warm)"
+elif [[ "${BENCH_FLUSH_DEGRADED:-0}" == "1" ]]; then
+    METHODOLOGY="median of 3 runs (cold requested but sudo unavailable; degraded to warm)"
+else
+    METHODOLOGY="median of 3 runs, cache flushed before each run (cold)"
+fi
+
 echo "# zstd level tuning — $NAME"
 echo
 echo "_marc: ${MARC_VERSION} | tar: ${TAR_VERSION}_"
-echo "_host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: median of 3 after 1 warmup, page cache primed_"
+echo "_host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: ${METHODOLOGY}_"
 echo "_corpus: ${FILE_COUNT} files"$([[ -n "$COMMIT" ]] && echo " @ ${COMMIT:0:8}" || echo "")"_"
 echo
 

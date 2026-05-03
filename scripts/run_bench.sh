@@ -1,37 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./run_bench.sh [--compression zstd|gz] [--type size|time|legacy] [--cold]
+# Usage: ./run_bench.sh [--compression zstd|gz] [--type size|time|legacy] [--hot]
 #
 # All progress/debug output goes to stderr so that stdout contains
 # only the markdown table, enabling:  ./run_bench.sh >> RESULTS.md
 #
 # Cache mode (affects --type time only; size is deterministic):
 #
-#   default   WARM: prime the OS page cache before every timed iteration,
-#             then run one untimed warmup, then 3 timed runs. Median
-#             reported. Variance < 3%. Reflects CPU-bound encoding speed
-#             and is the right mode for tracking small regressions.
-#
-#   --cold    COLD: flush the OS page cache before each timed iteration
+#   default   COLD: flush the OS page cache before each timed iteration
 #             (`purge` on macOS, `sync && drop_caches` on Linux). No
 #             warmup, since warming would defeat the cold purpose.
 #             Reflects realistic I/O-bound wall-clock — what users
 #             actually experience when archiving a fresh checkout.
-#
-#             Use --cold to:
-#               - reproduce / compare against pre-2026-05-03 historical
-#                 numbers in docs/benchmarks.md (those were cold-cache);
-#               - run unattended in CI where the goal is realistic
-#                 wall-clock, not CPU-only regression tracking;
-#               - sanity-check that warm-cache wins haven't masked an
-#                 I/O regression.
+#             Matches the methodology of the pre-2026-05-03 historical
+#             tables, so before/after comparisons are honest.
 #
 #             Needs sudo on both macOS (`purge`) and Linux (`drop_caches`).
 #             The script primes sudo once at startup (one TouchID /
 #             password prompt) so the 3-iteration loops run unattended.
 #             If sudo isn't available, falls back to warm cache and
 #             prints one warning rather than spamming stderr.
+#
+#   --hot     WARM: prime the OS page cache before every timed iteration,
+#             then run one untimed warmup, then 3 timed runs. Median
+#             reported. Variance < 3%. Reflects CPU-bound encoding speed
+#             and is the right mode for tracking small regressions during
+#             development. Doesn't need sudo.
 #
 # On macOS, the script self-wraps in `caffeinate -di` to prevent display
 # sleep / idle throttling during the benchmark. Set NO_CAFFEINATE=1 to opt
@@ -48,13 +43,13 @@ COMPARE="$PLAYGROUND/compare_on_repo.sh"
 
 COMPRESSION="zstd"
 TYPE="legacy"
-COLD_FLAG=""
+HOT_FLAG=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --compression) COMPRESSION="$2"; shift 2 ;;
         --type)        TYPE="$2"; shift 2 ;;
-        --cold)        COLD_FLAG="--cold"; shift ;;
+        --hot)         HOT_FLAG="--hot"; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -71,17 +66,18 @@ REPOS=(
     "https://github.com/facebook/react react 561ed529b3a6a16e5b2b76fa5ee86c09f959686c"
 )
 
-EXTRA_ARGS="--compression $COMPRESSION --type $TYPE $COLD_FLAG"
+EXTRA_ARGS="--compression $COMPRESSION --type $TYPE $HOT_FLAG"
 
-# In cold mode, prompt for sudo upfront so subsequent flush_cache calls inherit
-# a cached credential instead of failing silently per-iteration. If the prime
-# fails, set BENCH_COLD_DEGRADED so flush_cache silences its per-iteration
-# warning rather than spamming stderr.
-if [[ "$COLD_FLAG" == "--cold" && "$(uname -s)" == "Darwin" ]]; then
-    echo "[run_bench] --cold mode: priming sudo credential for purge" >&2
+# Default cache mode is COLD. Prompt for sudo upfront so subsequent
+# flush_cache calls inherit a cached credential instead of failing
+# silently per-iteration. If the prime fails, set BENCH_FLUSH_DEGRADED so
+# flush_cache silences its per-iteration warning and the run quietly
+# falls back to warm cache. Skipped when --hot is requested.
+if [[ -z "$HOT_FLAG" && "$(uname -s)" == "Darwin" ]]; then
+    echo "[run_bench] cold mode (default): priming sudo credential for purge" >&2
     if ! sudo -v 2>/dev/null; then
-        echo "[run_bench] WARNING: sudo prime failed; --cold will run with warm cache" >&2
-        export BENCH_COLD_DEGRADED=1
+        echo "[run_bench] WARNING: sudo prime failed; cold mode will fall back to warm cache" >&2
+        export BENCH_FLUSH_DEGRADED=1
     fi
 fi
 

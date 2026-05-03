@@ -56,10 +56,10 @@ parse_seconds() {
 
 # prime_cache <dir|file>: read every file under the path so the OS page cache
 # is warm before we measure. Errors are ignored (best-effort warmup).
-# In cold mode (BENCH_COLD=1), this is a no-op — flush_cache handles the
-# inverse goal of evicting cache before each measurement.
+# Only runs when the bench is in warm/hot mode (BENCH_HOT=1); otherwise the
+# default cold mode wants the cache flushed, not primed.
 prime_cache() {
-    [[ "${BENCH_COLD:-0}" == "1" ]] && return 0
+    [[ "${BENCH_HOT:-0}" != "1" ]] && return 0
     local target="$1"
     if [[ -d "$target" ]]; then
         find "$target" -type f -print0 2>/dev/null \
@@ -82,10 +82,10 @@ _bench_flush_warn() {
 }
 
 flush_cache() {
-    # Parent script may set BENCH_COLD_DEGRADED=1 after detecting sudo is
+    # Parent script may set BENCH_FLUSH_DEGRADED=1 after detecting sudo is
     # unavailable, to suppress the redundant per-iteration warning that
     # would otherwise fire from each time_median subshell.
-    [[ "${BENCH_COLD_DEGRADED:-0}" == "1" ]] && return 0
+    [[ "${BENCH_FLUSH_DEGRADED:-0}" == "1" ]] && return 0
 
     case "$(uname -s)" in
         Darwin)
@@ -117,26 +117,28 @@ flush_cache() {
 # "0mSS.SSSs". Before each run, calls <prep_cmd> (typically rm/mkdir of
 # the output).
 #
-# Default mode (BENCH_COLD unset / 0): warm cache.
+# Default mode (BENCH_HOT unset / 0): COLD cache — realistic I/O-bound
+# wall-clock.
+#   - No warmup (would defeat the cold-state purpose).
+#   - flush_cache before every timed iteration (purge / drop_caches).
+#   - Reflects what users actually experience archiving fresh files.
+#   - Needs sudo; falls back to warm with one warning if unavailable
+#     (parent script sets BENCH_FLUSH_DEGRADED=1).
+#
+# Hot mode (BENCH_HOT=1): WARM cache — low-variance regression tracking.
 #   - 1 untimed warmup run (eats dyld/JIT/code-sign cost).
 #   - prime_cache primes <prime_target> before warmup AND each timed run.
-#   - Useful for low-variance regression tracking; the OS-cache state is
-#     held constant across iterations.
-#
-# Cold mode (BENCH_COLD=1): evict cache before each timed iteration.
-#   - No warmup (would defeat the cold-state purpose).
-#   - flush_cache instead of prime_cache.
-#   - Reflects realistic I/O-bound wall-clock for tools that do disk reads;
-#     CPU-bound tools see little difference vs warm.
+#   - OS-cache state held constant across iterations; variance < 3%.
+#   - Useful for catching small CPU-pipeline regressions in development.
 #
 # <prep_cmd> and <timed_cmd> are eval'd, so they can be function names or
 # full command strings. Use single-quoted args so $VARS expand at eval time.
 time_median() {
     local prime_target="$1" prep_cmd="$2" timed_cmd="$3"
     local n="${4:-3}"
-    local i start end dur cold="${BENCH_COLD:-0}"
+    local i start end dur hot="${BENCH_HOT:-0}"
 
-    if [[ "$cold" != "1" ]]; then
+    if [[ "$hot" == "1" ]]; then
         # Warm-cache mode: 1 untimed warmup, then n timed runs after priming.
         prime_cache "$prime_target"
         eval "$prep_cmd" >/dev/null 2>&1 || true
@@ -145,10 +147,10 @@ time_median() {
 
     local times=()
     for ((i = 0; i < n; i++)); do
-        if [[ "$cold" == "1" ]]; then
-            flush_cache
-        else
+        if [[ "$hot" == "1" ]]; then
             prime_cache "$prime_target"
+        else
+            flush_cache
         fi
         eval "$prep_cmd" >/dev/null 2>&1 || true
         start=$EPOCHREALTIME

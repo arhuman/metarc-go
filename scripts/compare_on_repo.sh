@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./compare_on_repo.sh --name <name> --repo <repourl> [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--cold]
+# Usage: ./compare_on_repo.sh --name <name> --repo <repourl> [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--hot]
 #
 # Clones <repourl> into /tmp/<name>, archives with tar and marc,
 # extracts marc into /tmp/<name>2, compares, and prints one markdown
@@ -22,23 +22,22 @@ set -euo pipefail
 #   --type time         timing columns only
 #
 # Cache mode (affects --type time only):
-#   (default)    WARM: prime the page cache before each timed run + 1 warmup.
-#                Variance < 3%. Best for tracking small regressions because
-#                the OS state is held constant across iterations. Numbers
-#                reflect the tool's CPU-bound speed when I/O is not the
-#                bottleneck.
-#
-#   --cold       COLD: flush the page cache (purge / drop_caches) before
+#   (default)    COLD: flush the page cache (purge / drop_caches) before
 #                each timed run. No warmup. Reflects realistic I/O-bound
 #                wall-clock — what users actually experience when archiving
-#                files that aren't already in RAM. Use this to:
-#                  - compare against pre-2026-05-03 historical numbers;
-#                  - run unattended in CI for honest wall-clock results;
-#                  - rule out an I/O regression that warm-cache would hide.
-#                Needs sudo (`purge` on macOS, `drop_caches` on Linux). The
-#                script primes sudo once at startup so the iteration loop
-#                runs unattended; if sudo is unavailable, falls back to
-#                warm-cache with one warning.
+#                files that aren't already in RAM. Matches the methodology
+#                of the pre-2026-05-03 historical tables, so before/after
+#                comparisons are honest. Needs sudo (`purge` on macOS,
+#                `drop_caches` on Linux); the script primes sudo once at
+#                startup so the iteration loop runs unattended. If sudo is
+#                unavailable, falls back to warm-cache with one warning.
+#
+#   --hot        WARM: prime the page cache before each timed run + 1
+#                warmup. Variance < 3%. Best for tracking small regressions
+#                during development — the OS state is held constant across
+#                iterations so CPU-pipeline changes show up cleanly. Doesn't
+#                need sudo. Use --hot when you don't care about realistic
+#                wall-clock and just want low-variance numbers.
 #
 # Special case: --name header --repo header  → prints the table header.
 
@@ -66,26 +65,26 @@ while [[ $# -gt 0 ]]; do
         --compression) COMPRESSION="$2"; shift 2 ;;
         --type)        TYPE="$2"; shift 2 ;;
         --commit)      COMMIT="$2"; shift 2 ;;
-        --cold)        export BENCH_COLD=1; shift ;;
+        --hot)         export BENCH_HOT=1; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
 if [[ -z "$NAME" || -z "$REPO" ]]; then
-    echo "Usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--cold]" >&2
+    echo "Usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--hot]" >&2
     exit 1
 fi
 
-# In cold mode on macOS, prime sudo credentials upfront so subsequent
-# `sudo -n purge` calls in time_median subshells inherit the cached
-# credential. Without this, each subshell tries `sudo -n` and falls
-# through (TouchID/password sudo doesn't work non-interactively).
-# If the prime fails, set BENCH_COLD_DEGRADED so flush_cache silences
-# its per-iteration warning.
-if [[ "${BENCH_COLD:-0}" == "1" && "$(uname -s)" == "Darwin" ]]; then
+# Default cache mode is COLD. On macOS, prime sudo credentials upfront so
+# subsequent `sudo -n purge` calls in time_median subshells inherit the
+# cached credential (TouchID/password sudo doesn't work non-interactively).
+# If the prime fails, set BENCH_FLUSH_DEGRADED so flush_cache silences its
+# per-iteration warning and the run quietly falls back to warm cache.
+# Skipped when --hot is requested.
+if [[ "${BENCH_HOT:-0}" != "1" && "$(uname -s)" == "Darwin" ]]; then
     if ! sudo -v 2>/dev/null; then
-        echo "[compare_on_repo] WARNING: sudo prime failed; --cold will run with warm cache" >&2
-        export BENCH_COLD_DEGRADED=1
+        echo "[compare_on_repo] WARNING: sudo prime failed; cold mode will fall back to warm cache" >&2
+        export BENCH_FLUSH_DEGRADED=1
     fi
 fi
 
@@ -108,10 +107,12 @@ if [[ "$NAME" == "header" && "$REPO" == "header" ]]; then
         CORES=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo "?")
         MEM_BYTES=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
         MEM=$(awk -v b="$MEM_BYTES" 'BEGIN{ if (b > 0) printf "%dG", b/1073741824; else print "?" }')
-        if [[ "${BENCH_COLD:-0}" == "1" ]]; then
-            METHODOLOGY="median of 3 runs, cache flushed before each run (cold)"
-        else
+        if [[ "${BENCH_HOT:-0}" == "1" ]]; then
             METHODOLOGY="median of 3 runs after 1 warmup, page cache primed (warm)"
+        elif [[ "${BENCH_FLUSH_DEGRADED:-0}" == "1" ]]; then
+            METHODOLOGY="median of 3 runs (cold requested but sudo unavailable; degraded to warm)"
+        else
+            METHODOLOGY="median of 3 runs, cache flushed before each run (cold)"
         fi
         echo "_host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: ${METHODOLOGY}_"
     fi
