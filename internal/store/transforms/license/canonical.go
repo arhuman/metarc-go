@@ -113,10 +113,21 @@ func (c *Canonical) CostEstimate(_ marc.Entry, facts marc.Facts) (gainBytes, cpu
 }
 
 // params is the JSON structure stored in Result.Params.
+//
+// Leading/Trailing capture the exact whitespace bytes that normalize()
+// trims off the head and tail of the source content, so reverse can
+// reconstruct byte-identical output even when the trim collapsed multiple
+// newlines (e.g. a file ending with "\n\n").
+//
+// TrailingNL is the legacy field (true = exactly one trailing newline). It
+// is read-only — kept for back-compat with archives produced by metarc
+// versions before this fix; never written by current code.
 type params struct {
 	SPDX       string   `json:"spdx"`
 	Ops        []diffOp `json:"ops,omitempty"`
-	TrailingNL bool     `json:"nl,omitempty"` // original file ended with newline
+	Leading    string   `json:"lead,omitempty"`
+	Trailing   string   `json:"tail,omitempty"`
+	TrailingNL bool     `json:"nl,omitempty"`
 }
 
 // diffOp is a compact representation of a single diff operation.
@@ -124,6 +135,18 @@ type diffOp struct {
 	Kind  string `json:"k"`           // "=", "+", "-"
 	Count int    `json:"n,omitempty"` // number of consecutive equal lines
 	Line  string `json:"l,omitempty"` // line text for insert/delete
+}
+
+// trimWhitespace returns (leading, body, trailing) where leading + body +
+// trailing == s and body has no leading/trailing whitespace. Mirrors what
+// normalize() removes, so the trimmed bytes can be preserved in params.
+func trimWhitespace(s string) (leading, body, trailing string) {
+	body = strings.TrimSpace(s)
+	if body == "" {
+		return s, "", ""
+	}
+	leading, trailing, _ = strings.Cut(s, body)
+	return leading, body, trailing
 }
 
 // Apply reads the full file content, normalizes it, and attempts to match it
@@ -136,13 +159,15 @@ func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src i
 		return marc.Result{}, false, fmt.Errorf("license-canonical: read: %w", err)
 	}
 
-	trailingNL := len(data) > 0 && data[len(data)-1] == '\n'
-	norm := normalize(string(data))
+	// Capture exact leading/trailing whitespace before normalize() trims it.
+	// normalize() does CRLF→LF then TrimSpace; capture matches that order.
+	withCRLF := strings.ReplaceAll(string(data), "\r\n", "\n")
+	leading, norm, trailing := trimWhitespace(withCRLF)
 	h := blake3.Sum256([]byte(norm))
 
 	// Fast path: exact match against canonical template (including placeholders).
 	if entry, ok := fingerprints[h]; ok {
-		return c.writeResult(ctx, sink, entry, trailingNL, nil)
+		return c.writeResult(ctx, sink, entry, leading, trailing, nil)
 	}
 
 	// Body-hash path: strip copyright lines, hash the body, look up.
@@ -164,7 +189,7 @@ func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src i
 	compact := compactOps(ops)
 
 	// Check params size safety.
-	p := params{SPDX: entry.SPDX, Ops: compact, TrailingNL: trailingNL}
+	p := params{SPDX: entry.SPDX, Ops: compact, Leading: leading, Trailing: trailing}
 	paramsJSON, err := json.Marshal(p)
 	if err != nil {
 		return marc.Result{}, false, fmt.Errorf("license-canonical: marshal params: %w", err)
@@ -173,12 +198,12 @@ func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src i
 		return marc.Result{}, false, nil // diff too large, not a real match
 	}
 
-	return c.writeResult(ctx, sink, entry, trailingNL, paramsJSON)
+	return c.writeResult(ctx, sink, entry, leading, trailing, paramsJSON)
 }
 
 // writeResult writes the canonical template blob and returns the result.
-// If paramsJSON is nil, it marshals a minimal params with SPDX only.
-func (c *Canonical) writeResult(ctx context.Context, sink marc.BlobSink, entry licenseEntry, trailingNL bool, paramsJSON []byte) (marc.Result, bool, error) {
+// If paramsJSON is nil, it marshals a minimal params with SPDX + leading/trailing only.
+func (c *Canonical) writeResult(ctx context.Context, sink marc.BlobSink, entry licenseEntry, leading, trailing string, paramsJSON []byte) (marc.Result, bool, error) {
 	canonicalBytes := []byte(normalize(entry.Text))
 	blobID, err := sink.Write(ctx, bytes.NewReader(canonicalBytes))
 	if err != nil {
@@ -187,7 +212,7 @@ func (c *Canonical) writeResult(ctx context.Context, sink marc.BlobSink, entry l
 
 	if paramsJSON == nil {
 		var marshalErr error
-		paramsJSON, marshalErr = json.Marshal(params{SPDX: entry.SPDX, TrailingNL: trailingNL})
+		paramsJSON, marshalErr = json.Marshal(params{SPDX: entry.SPDX, Leading: leading, Trailing: trailing})
 		if marshalErr != nil {
 			return marc.Result{}, false, fmt.Errorf("license-canonical: marshal params: %w", marshalErr)
 		}
@@ -236,7 +261,12 @@ func (c *Canonical) Reverse(_ context.Context, r marc.Result, blobs marc.BlobRea
 		out = strings.Join(original, "\n")
 	}
 
-	if p.TrailingNL {
+	// Restore exact whitespace. New archives store Leading/Trailing; old
+	// archives only have the legacy TrailingNL bool which means "exactly
+	// one trailing newline" — preserve that exact semantic.
+	if p.Leading != "" || p.Trailing != "" {
+		out = p.Leading + out + p.Trailing
+	} else if p.TrailingNL {
 		out += "\n"
 	}
 	_, err = io.WriteString(dst, out)

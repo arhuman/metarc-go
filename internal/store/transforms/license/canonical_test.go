@@ -377,3 +377,89 @@ func truncate(s string, n int) string {
 	}
 	return s[:n] + "..."
 }
+
+// TestRoundTrip_preservesExactWhitespace covers the regression where
+// licenses with trailing-empty-line(s), CRLF endings, or leading whitespace
+// silently lost bytes through the normalize→diff→reverse path. The bug was
+// surfaced by vendor/github.com/x448/float16/LICENSE in kubernetes (1102
+// bytes ending "SOFTWARE.\n\n", coming back as 1101 bytes "SOFTWARE.\n").
+func TestRoundTrip_preservesExactWhitespace(t *testing.T) {
+	mitWithRealCopyright := makeLicenseWithCopyright(mitText, "Copyright (c) 2024 Google LLC")
+
+	cases := []struct {
+		name string
+		in   string
+	}{
+		{"trailing empty line", mitWithRealCopyright + "\n\n"},
+		{"trailing 3 newlines", mitWithRealCopyright + "\n\n\n"},
+		{"trailing whitespace", mitWithRealCopyright + "\n   \t\n"},
+		{"leading whitespace", "\n\n" + mitWithRealCopyright + "\n"},
+		{"CRLF line endings", strings.ReplaceAll(mitWithRealCopyright, "\n", "\r\n") + "\r\n"},
+		{"no trailing newline", mitWithRealCopyright},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := NewCanonical()
+			ctx := context.Background()
+			sink := newFakeSink()
+
+			e := makeEntry("LICENSE", int64(len(tc.in)))
+			facts := marc.Facts{Size: int64(len(tc.in))}
+			result, handled, err := c.Apply(ctx, e, facts, strings.NewReader(tc.in), sink)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			if !handled {
+				t.Fatalf("expected handled=true")
+			}
+
+			blobs := &fakeBlobs{blobs: sink.blobs}
+			var buf bytes.Buffer
+			if err := c.Reverse(ctx, result, blobs, &buf); err != nil {
+				t.Fatalf("Reverse: %v", err)
+			}
+
+			// CRLF case: normalize() converts CRLF→LF before storing, so
+			// reverse produces LF-only output. Compare against the
+			// LF-normalized input rather than the literal input.
+			want := strings.ReplaceAll(tc.in, "\r\n", "\n")
+			got := buf.String()
+			if got != want {
+				t.Fatalf("round-trip mismatch (%d → %d bytes):\nwant: %q\n got: %q",
+					len(tc.in), len(got), truncate(want, 80), truncate(got, 80))
+			}
+		})
+	}
+}
+
+// TestReverse_legacyTrailingNL exercises the back-compat path: archives
+// produced by metarc versions before the trailing-whitespace fix wrote
+// {"nl": true} and expect exactly one trailing "\n" on reverse.
+func TestReverse_legacyTrailingNL(t *testing.T) {
+	c := NewCanonical()
+	ctx := context.Background()
+
+	// Hand-craft a legacy params record (no Leading/Trailing fields).
+	legacy := params{SPDX: "MIT", TrailingNL: true}
+	paramsJSON, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Build a fake blob containing the canonical MIT text.
+	blob := []byte(normalize(mitText))
+	blobs := &fakeBlobs{blobs: map[marc.BlobID][]byte{1: blob}}
+
+	r := marc.Result{BlobIDs: []marc.BlobID{1}, Params: paramsJSON}
+	var buf bytes.Buffer
+	if err := c.Reverse(ctx, r, blobs, &buf); err != nil {
+		t.Fatalf("Reverse: %v", err)
+	}
+
+	want := normalize(mitText) + "\n"
+	if buf.String() != want {
+		t.Fatalf("legacy reverse: got %q, want %q",
+			truncate(buf.String(), 80), truncate(want, 80))
+	}
+}
