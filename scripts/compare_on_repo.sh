@@ -100,7 +100,7 @@ fi
 if [[ "$NAME" == "header" && "$REPO" == "header" ]]; then
     MARC_VERSION=$("$MARC" --version 2>&1 || echo "unknown")
     TAR_VERSION=$(tar --version 2>/dev/null | head -1 || echo "unknown")
-    echo "_marc: ${MARC_VERSION} | tar: ${TAR_VERSION}_"
+    echo "_ marc: ${MARC_VERSION} | tar: ${TAR_VERSION}_"
     if [[ "$TYPE" == "time" || "$TYPE" == "legacy" ]]; then
         OS_VER=$(sw_vers -productVersion 2>/dev/null || uname -sr)
         CPU=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)
@@ -114,7 +114,7 @@ if [[ "$NAME" == "header" && "$REPO" == "header" ]]; then
         else
             METHODOLOGY="median of 3 runs, cache flushed before each run (cold)"
         fi
-        echo "_host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: ${METHODOLOGY}_"
+        echo "_ host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: ${METHODOLOGY} _"
     fi
     echo ""
     case "$TYPE" in

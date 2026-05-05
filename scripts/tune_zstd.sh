@@ -121,9 +121,9 @@ fi
 
 echo "# zstd level tuning — $NAME"
 echo
-echo "_marc: ${MARC_VERSION} | tar: ${TAR_VERSION}_"
-echo "_host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: ${METHODOLOGY}_"
-echo "_corpus: ${FILE_COUNT} files"$([[ -n "$COMMIT" ]] && echo " @ ${COMMIT:0:8}" || echo "")"_"
+echo "_ marc: ${MARC_VERSION} | tar: ${TAR_VERSION}_"
+echo "_ host: ${OS_VER}, ${CPU}, ${CORES} cores, ${MEM} | timing: ${METHODOLOGY}_"
+echo "_ corpus: ${FILE_COUNT} files"$([[ -n "$COMMIT" ]] && echo " @ ${COMMIT:0:8}" || echo "")"_"
 echo
 
 # --- baselines ---

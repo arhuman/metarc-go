@@ -107,7 +107,7 @@ The catalog is an ordinary SQLite database during writes (WAL mode, performance 
 The spec listed `small-text-pack` as an MVP priority: group small similar files together to improve the compression window. The implementation chose a more general approach.
 
 ### Decision
-`solidAccumulator` concatenates consecutive blobs into a single zstd frame (default threshold: 4 MB). All blobs are eligible, not just small ones. Enabled by default, can be disabled with `--no-solid`.
+`solidAccumulator` concatenates consecutive blobs into a single zstd frame (default threshold: 16 MiB, raised from 4 MiB on 2026-05-03). The accumulator also flushes on any file-extension change so each block is extension-pure. All blobs are eligible, not just small ones. Enabled by default, can be disabled with `--no-solid`.
 
 ### Consequences
 - (+) Exploits cross-file redundancy (common import headers, YAML keys, license preambles) without any format knowledge

@@ -3,47 +3,58 @@
 All benchmarks run against shallow clones of real-world open source repositories,
 archived with `marc` vs `tar+zstd`, on the same machine.
 
+> **Cold-cache timing requires sudo**
+>
+> `run_bench.sh` now uses cold-cache timing by default. To enforce this, it drops filesystem caches between runs, which requires `sudo` on Linux.
+>
+> If `sudo` is not available, run:
+>
+> ```bash
+> ./scripts/run_bench.sh --type time --hot
+> ```
+>
+> Hot-cache results are valid, but they measure a different scenario: data already cached in memory. They reduce I/O/cache effects and mostly reflect CPU, hashing, traversal, and compression behavior. Do not compare hot-cache timings directly with cold-cache timings.
+
 ## Performance
 
 ### Size
 
 #### vs tar+zstd
 
-`./scripts/run_bench.sh --type size`
-
-_marc: metarc version v0.8.0-3-g20bdb86a-dirty (20bdb86a, 2026-05-03T13:30:45Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+ ./scripts/run_bench.sh --type size
+[run_bench] cold mode (default): priming sudo credential for purge
+_ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 81.1M | 74.1M | 91.4% |
+| kubernetes | 376M | 29838 | 81.1M | 74.2M | 91.4% |
 | docker-compose | 4.5M | 702 | 1.1M | 1.1M | 99.1% |
-| vuejs | 9.8M | 728 | 3.3M | 3.2M | 97.4% |
+| vuejs | 9.9M | 728 | 3.2M | 3.2M | 97.5% |
 | numpy |  50M | 2364 | 18.4M | 17.5M | 95.3% |
 | redis |  29M | 1780 | 8.9M | 8.4M | 93.7% |
-| bootstrap |  27M | 816 | 13.9M | 13.3M | 96.0% |
+| bootstrap |  27M | 816 | 13.9M | 13.3M | 95.9% |
 | express | 1.6M | 238 | 345.6K | 339.3K | 98.2% |
 | react |  65M | 6884 | 18.5M | 17.1M | 92.4% |
-
 
 #### vs tar+gz
 
  `./scripts/run_bench.sh --type size --compression gz`
 
-_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T04:14:31Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+gz size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 90.0M | 75.3M | 83.6% |
-| docker-compose | 4.5M | 702 | 1.2M | 1.1M | 91.9% |
-| vuejs | 9.8M | 728 | 3.3M | 3.2M | 96.5% |
-| numpy |  50M | 2364 | 18.9M | 17.7M | 93.4% |
-| redis |  28M | 1780 | 9.0M | 8.4M | 92.9% |
-| bootstrap |  27M | 816 | 14.7M | 13.4M | 91.0% |
-| express | 1.6M | 238 | 354.0K | 332.5K | 93.9% |
-| react |  65M | 6884 | 19.8M | 17.3M | 87.4% |
+| kubernetes | 376M | 29838 | 90.0M | 74.2M | 82.4% |
+| docker-compose | 4.5M | 702 | 1.2M | 1.1M | 94.4% |
+| vuejs | 9.8M | 728 | 3.3M | 3.2M | 96.9% |
+| numpy |  50M | 2364 | 18.9M | 17.5M | 92.7% |
+| redis |  28M | 1780 | 9.0M | 8.4M | 92.7% |
+| bootstrap |  27M | 816 | 14.7M | 13.3M | 90.3% |
+| express | 1.6M | 238 | 354.1K | 339.3K | 95.8% |
+| react |  66M | 6884 | 19.8M | 17.1M | 86.3% |
 
 > Against tar+gz, marc shines on large, Go-heavy or mixed-language repos.
-> Against tar+zstd, Metarc is now (sometimes slightly) better on all repos.
+> Against tar+zstd, Metarc is now better on all repos.
 
 ### Time
 
@@ -51,41 +62,42 @@ _marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) |
 
  `./scripts/run_bench.sh --type time`
 
-_marc: metarc version v0.8.0-3-g20bdb86a-dirty (20bdb86a, 2026-05-03T13:30:45Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
-_host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold)_
+_ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold) _
 
 | Repo | Files | tar+zstd arc | marc arc | tar+zstd ext | marc ext | marc speedup (arc) |
 |------|-------|------------------------|----------|-----------------------|----------|--------------------|
-| kubernetes | 29838 | 0m14.632s | 0m7.369s | 0m12.478s | 0m5.011s | 2× faster |
-| docker-compose | 702 | 0m0.560s | 0m0.188s | 0m0.440s | 0m0.134s | 3× faster |
-| vuejs | 728 | 0m0.595s | 0m0.254s | 0m0.403s | 0m0.137s | 2.3× faster |
-| numpy | 2364 | 0m1.355s | 0m0.957s | 0m0.968s | 0m0.370s | 1.4× faster |
-| redis | 1780 | 0m1.200s | 0m0.674s | 0m0.792s | 0m0.285s | 1.8× faster |
-| bootstrap | 816 | 0m0.644s | 0m0.346s | 0m0.500s | 0m0.153s | 1.9× faster |
-| express | 238 | 0m0.383s | 0m0.098s | 0m0.281s | 0m0.065s | 3.9× faster |
-| react | 6884 | 0m3.455s | 0m1.401s | 0m2.539s | 0m0.951s | 2.5× faster |
+| kubernetes | 29838 | 0m18.748s | 0m12.464s | 0m16.159s | 0m6.277s | 1.5× faster |
+| docker-compose | 702 | 0m0.716s | 0m0.256s | 0m0.556s | 0m0.180s | 2.8× faster |
+| vuejs | 728 | 0m0.826s | 0m0.370s | 0m0.605s | 0m0.174s | 2.2× faster |
+| numpy | 2364 | 0m1.727s | 0m1.594s | 0m1.306s | 0m0.490s | 1.1× faster |
+| redis | 1780 | 0m1.375s | 0m0.941s | 0m1.034s | 0m0.339s | 1.5× faster |
+| bootstrap | 816 | 0m0.842s | 0m0.570s | 0m0.585s | 0m0.207s | 1.5× faster |
+| express | 238 | 0m0.491s | 0m0.179s | 0m0.254s | 0m0.095s | 2.7× faster |
+| react | 6884 | 0m4.636s | 0m2.268s | 0m3.658s | 0m1.201s | 2× faster |
+
 
 #### vs tar+gz
 
 `./scripts/run_bench.sh --type time --compression gz`
 
-_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
-_host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold)_
+_ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold) _
 
 | Repo | Files | tar+gz arc | marc arc | tar+gz ext | marc ext | marc speedup (arc) |
 |------|-------|------------------------|----------|-----------------------|----------|--------------------|
-| kubernetes | 29838 | 0m18.052s | 0m7.481s | 0m12.192s | 0m4.824s | 2.4× faster |
-| docker-compose | 702 | 0m0.594s | 0m0.164s | 0m0.415s | 0m0.130s | 3.6× faster |
-| vuejs | 728 | 0m0.698s | 0m0.227s | 0m0.442s | 0m0.127s | 3.1× faster |
-| numpy | 2364 | 0m1.967s | 0m0.929s | 0m1.001s | 0m0.351s | 2.1× faster |
-| redis | 1780 | 0m1.399s | 0m0.592s | 0m0.723s | 0m0.260s | 2.4× faster |
-| bootstrap | 816 | 0m1.004s | 0m0.316s | 0m0.498s | 0m0.155s | 3.2× faster |
-| express | 238 | 0m0.328s | 0m0.076s | 0m0.285s | 0m0.067s | 4.3× faster |
-| react | 6884 | 0m4.066s | 0m1.379s | 0m2.456s | 0m0.880s | 2.9× faster |
-
+| kubernetes | 29838 | 0m23.998s | 0m11.476s | 0m15.937s | 0m6.579s | 2.1× faster |
+| docker-compose | 702 | 0m0.749s | 0m0.255s | 0m0.536s | 0m0.176s | 2.9× faster |
+| vuejs | 728 | 0m0.890s | 0m0.340s | 0m0.540s | 0m0.189s | 2.6× faster |
+| numpy | 2364 | 0m2.724s | 0m1.453s | 0m1.323s | 0m0.495s | 1.9× faster |
+| redis | 1780 | 0m1.884s | 0m1.143s | 0m1.007s | 0m0.352s | 1.6× faster |
+| bootstrap | 816 | 0m1.304s | 0m0.449s | 0m0.593s | 0m0.226s | 2.9× faster |
+| express | 238 | 0m0.415s | 0m0.146s | 0m0.317s | 0m0.088s | 2.8× faster |
+| react | 6884 | 0m5.349s | 0m1.887s | 0m3.271s | 0m1.274s | 2.8× faster |
 
 > marc is still faster that tar+zstd and tar+gz, due to parallel BLAKE3 hashing and lightweight transforms 
-> BUT current version traded some speed for better compression (zstd compression level)
+> BUT current version traded some speed for better compression (zstd compression level) and some transforms
+> were added that slow down even further.
 
 ---
 

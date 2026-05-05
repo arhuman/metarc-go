@@ -6,8 +6,13 @@
 
 **Compress structure before bytes.**
 
-Metarc is an experimental archiver exploring *metacompression*:  
-reducing structural and semantic redundancy across files before applying standard compression.
+Metarc is an experimental archive format that compresses source-code trees
+by exploiting cross-file and semantic redundancy before applying zstd.
+
+On real open-source repositories, current benchmarks show archives
+3–7% smaller than tar+zstd, while archiving faster on the tested machine.
+
+Not a tar replacement yet. A research-grade playground with reproducible benchmarks.
 
 ---
 
@@ -55,13 +60,13 @@ Think of it as a **playground for compression ideas**, not a finished product.
 
 ---
 
-## Performances
+## Benchmarks
 
 More detailed Benchmarks as well as instructions to produce yours are available in [docs/benchmarks.md](docs/benchmarks.md)
 
 ### Compression
 
-Metarc compression shines in directory with a lot of redundancy where it's file dedup outperforms even tar + zstd :
+Metarc compression shines in directory with a lot of redundancy where its file dedup outperforms even tar + zstd :
 
 ```Bash
 6.5G	code_perso
@@ -73,28 +78,29 @@ But the goal is to make it at least "as good" in most common cases, that's why w
 
 Previous comparisons used `tar + gzip`, we now use `tar + zstd` for a fairer comparison.
 
-
 `./scripts/run_bench.sh --type size`
 
-_marc: metarc version v0.7.0-14-gff9a306-dirty (ff9a306, 2026-05-03T10:34:58Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 81.1M | 75.3M | 92.8% |
-| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 96.5% |
-| vuejs | 9.9M | 728 | 3.3M | 3.2M | 97.0% |
-| numpy |  50M | 2364 | 18.4M | 17.7M | 96.0% |
-| redis |  28M | 1780 | 8.9M | 8.4M | 94.3% |
-| bootstrap |  27M | 816 | 13.9M | 13.4M | 96.6% |
-| express | 1.6M | 238 | 345.7K | 332.5K | 96.2% |
-| react |  65M | 6884 | 18.5M | 17.3M | 93.6% |
+| kubernetes | 376M | 29838 | 81.1M | 74.2M | 91.4% |
+| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 99.1% |
+| vuejs | 9.9M | 728 | 3.2M | 3.2M | 97.5% |
+| numpy |  50M | 2364 | 18.4M | 17.5M | 95.3% |
+| redis |  29M | 1780 | 8.9M | 8.4M | 93.7% |
+| bootstrap |  27M | 816 | 13.9M | 13.3M | 95.9% |
+| express | 1.6M | 238 | 345.6K | 339.3K | 98.2% |
+| react |  65M | 6884 | 18.5M | 17.1M | 92.4% |
+
+> See [`docs/benchmarks.md`](docs/benchmarks.md) for the gz baseline, time benchmarks, methodology, and changelog.
 
 
 ### Speed
 
 > [!NOTE]
 > The latest version shows a visible compression improvement:
-> New metacompression transformers and speed/compression tradeoff (raising zstd compression level) explains the results.
+> New metacompression transforms and speed/compression tradeoff (raising zstd compression level) explains the results.
 >
 > Metarc is proving to be an efficient playground for exploring metacompression ideas, structural transforms, and cross-file compression strategies.
 

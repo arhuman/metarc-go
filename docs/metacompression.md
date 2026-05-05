@@ -351,7 +351,7 @@ Compressed individually, each file achieves perhaps 40% compression. Compressed 
 
 ### 7.2 Implementation
 
-Files are accumulated into an in-memory buffer until a size threshold (e.g., 4 MB) is reached. The entire buffer is then compressed as a single zstd frame. Each blob records its offset within the decompressed block.
+Files are accumulated into an in-memory buffer until a size threshold (e.g., 16 MiB) is reached, or until the file extension changes. The entire buffer is then compressed as a single zstd frame. Each blob records its offset within the decompressed block.
 
 At extraction, the block is decompressed once and each blob's slice is extracted by offset. An LRU cache avoids re-decompressing the same block when extracting multiple files from it.
 
@@ -482,7 +482,7 @@ Dedup currently operates within a single archive. A shared content-addressable b
 | ID | Class | Lossless | Status |
 |----|-------|----------|--------|
 | `go-line-subst/v1` | Line substitution | Yes | Default |
-| `py-line-subst/v1` | Line substitution | Yes | Default |
+| `py-line-subst/v1` | Line substitution | Yes | **WIP — not registered** (hand-curated dict gave no measurable gain on bench corpora; awaits a frequency-counted `py_token.txt` rebuild or supersession by per-extension trained zstd dicts) |
 | `js-line-subst/v1` | Line substitution | Yes | **WIP — not registered** (hand-curated dict gave no measurable gain on bench corpora; awaits a frequency-counted `js_token.txt` rebuild or supersession by per-extension trained zstd dicts) |
 | `dedup/v1` | Exact dedup | Yes | Default |
 | `json-canonical/v1` | Canonical form | No | Opt-in |
