@@ -6,13 +6,50 @@
 
 **Compress structure before bytes.**
 
-Metarc is an experimental archive format that compresses source-code trees
-by exploiting cross-file and semantic redundancy before applying zstd.
+Metarc is an experimental archive format for source-code trees and structured file collections.
+It exploits cross-file and semantic redundancy before applying `zstd`.
 
-On real open-source repositories, current benchmarks show archives
-3–7% smaller than tar+zstd, while archiving faster on the tested machine.
+On my personal 6.5G source-code directory: **1.4G** with Metarc vs **1.8G** with `tar+zstd` (about **22% smaller**).
+
+On well-known open-source repositories, current benchmarks show archives
+**3–7% smaller than `tar+zstd`**, while archiving faster on the tested machine.
 
 Not a tar replacement yet. A research-grade playground with reproducible benchmarks.
+
+---
+
+## Try it on your GOMODCACHE 
+
+On real-world datasets like your Go module cache,
+Metarc typically achieves modest but consistent gains.
+
+
+```
+# Check your GOMODCACHE size
+du -sh $(go env GOMODCACHE)
+```
+
+```
+# Clone the repo
+git clone https://github.com/arhuman/metarc-go.git
+
+# Install marc
+cd metarc-go
+make install
+
+# Compress with tar+zstd
+tar --zstd -cf /tmp/gomodcache.tar.zst -C $(go env GOMODCACHE) .
+
+# Compress with Metarc 
+marc archive /tmp/gomodcache.marc $(go env GOMODCACHE)
+```
+
+You can now check the results
+
+```bash
+ls -lh /tmp/gomodcache.*
+perl -e 'printf "marc archive is %.2f%% smaller than tar archive\n", 100 * (1 - (-s "/tmp/gomodcache.marc") / (-s "/tmp/gomodcache.tar.zst"))'
+```
 
 ---
 
@@ -62,21 +99,21 @@ Think of it as a **playground for compression ideas**, not a finished product.
 
 ## Benchmarks
 
-More detailed Benchmarks as well as instructions to produce yours are available in [docs/benchmarks.md](docs/benchmarks.md)
+More detailed benchmarks, as well as instructions to reproduce them, are available in [docs/benchmarks.md](docs/benchmarks.md)
 
 ### Compression
 
-Metarc compression shines in directory with a lot of redundancy where its file dedup outperforms even tar + zstd :
+Metarc compression shines in directories with a lot of redundancy, where its file deduplication can outperform even `tar+zstd`:
 
 ```Bash
 6.5G	code_perso
-1.4G	code_perso.marc
 1.8G	code_perso.tar.zst
+1.4G	code_perso.marc     (22% smaller)
 ```
 
-But the goal is to make it at least "as good" in most common cases, that's why we mainly use standard popular repositories (using various languages) to measure our progress in this area.
+But the goal is to make it at least "as good" in most common cases, that's why we mainly use popular open-source repositories (using various languages) to measure our progress in this area.
 
-Previous comparisons used `tar + gzip`, we now use `tar + zstd` for a fairer comparison.
+Previous comparisons used `tar+gzip`, we now use `tar+zstd` for a fairer comparison.
 
 `./scripts/run_bench.sh --type size`
 
@@ -100,7 +137,7 @@ _marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) 
 
 > [!NOTE]
 > The latest version shows a visible compression improvement:
-> New metacompression transforms and speed/compression tradeoff (raising zstd compression level) explains the results.
+> New metacompression transforms and speed/compression tradeoffs (raising the zstd compression level) explain the results.
 >
 > Metarc is proving to be an efficient playground for exploring metacompression ideas, structural transforms, and cross-file compression strategies.
 
@@ -117,7 +154,7 @@ make install
 ```
 This installs `marc` to your `$GOBIN` (or `$GOPATH/bin`).
 
-## Test
+### Test
 
 ```bash
 make test
