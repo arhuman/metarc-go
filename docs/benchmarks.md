@@ -21,8 +21,8 @@ archived with `marc` vs `tar+zstd`, on the same machine.
 
 #### vs tar+zstd
 
- ./scripts/run_bench.sh --type size
-[run_bench] cold mode (default): priming sudo credential for purge
+`./scripts/run_bench.sh --type size`
+
 _ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
