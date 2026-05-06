@@ -135,7 +135,7 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 		return fmt.Errorf("runtime.Archive: single-root archive requires exactly 1 source, got %d", len(roots))
 	}
 
-	slog.Info("archiving", "roots", roots, "output", marcPath, "compressor", compressor, "dict", aopts.DictCompress, "workers", numWorkers, "solid", aopts.SolidBlockSize, "multi", multi)
+	slog.Debug("archiving", "roots", roots, "output", marcPath, "compressor", compressor, "dict", aopts.DictCompress, "workers", numWorkers, "solid", aopts.SolidBlockSize, "multi", multi)
 
 	var opts []store.Option
 	if compressor != "" {
@@ -340,7 +340,7 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 		}
 		count++
 		if count%5000 == 0 {
-			slog.Info("archive progress", "entries", count)
+			slog.Debug("archive progress", "entries", count)
 		}
 	}
 
