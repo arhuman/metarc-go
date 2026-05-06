@@ -152,7 +152,7 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 		// keeps the code simple while still benefiting cross-file dedup.
 		trainRoot := roots[0]
 		slog.Info("training zstd dictionary (prescan)", "root", trainRoot)
-		dictLevel := resolveZstdConfig(aopts.ZstdLevels).Dict
+		dictLevel := store.ResolveZstdConfig(aopts.ZstdLevels).Dict
 		dict, err := store.TrainDictionaryWithLevel(trainRoot, 0, 0, dictLevel)
 		if err != nil {
 			slog.Warn("dict training failed, continuing without dictionary", "err", err)
@@ -174,7 +174,7 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 		opts = append(opts, store.WithSolidBlockSize(aopts.SolidBlockSize))
 	}
 
-	opts = append(opts, store.WithZstdConfig(resolveZstdConfig(aopts.ZstdLevels)))
+	opts = append(opts, store.WithZstdConfig(store.ResolveZstdConfig(aopts.ZstdLevels)))
 
 	w, err := store.OpenWriter(marcPath, opts...)
 	if err != nil {
@@ -352,26 +352,6 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 
 	slog.Info("archive complete", "entries", count)
 	return nil
-}
-
-// resolveZstdConfig fills any zero field in user with the corresponding
-// default from store.DefaultZstdConfig. WindowSize=0 means "library default"
-// and is left as-is.
-func resolveZstdConfig(user store.ZstdConfig) store.ZstdConfig {
-	def := store.DefaultZstdConfig()
-	if user.Blob == 0 {
-		user.Blob = def.Blob
-	}
-	if user.Solid == 0 {
-		user.Solid = def.Solid
-	}
-	if user.Catalog == 0 {
-		user.Catalog = def.Catalog
-	}
-	if user.Dict == 0 {
-		user.Dict = def.Dict
-	}
-	return user
 }
 
 // hashFile computes the BLAKE3-256 hash of a file.

@@ -54,3 +54,23 @@ func DefaultZstdConfig() ZstdConfig {
 		Dict:    zstd.SpeedDefault,
 	}
 }
+
+// ResolveZstdConfig fills any zero field in user with the corresponding
+// default from DefaultZstdConfig. WindowSize=0 means "library default"
+// and is left as-is.
+func ResolveZstdConfig(user ZstdConfig) ZstdConfig {
+	def := DefaultZstdConfig()
+	if user.Blob == 0 {
+		user.Blob = def.Blob
+	}
+	if user.Solid == 0 {
+		user.Solid = def.Solid
+	}
+	if user.Catalog == 0 {
+		user.Catalog = def.Catalog
+	}
+	if user.Dict == 0 {
+		user.Dict = def.Dict
+	}
+	return user
+}

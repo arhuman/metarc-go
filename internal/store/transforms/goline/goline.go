@@ -5,14 +5,9 @@
 package goline
 
 import (
-	"bufio"
-	"bytes"
-	"context"
-	"fmt"
-	"io"
 	"path/filepath"
-	"strings"
 
+	"github.com/arhuman/metarc-go/internal/store/transforms/linesubst"
 	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
@@ -128,173 +123,33 @@ var dict = [...]string{
 	`You may obtain a copy of the License at`,
 }
 
-// dictLookup maps a stripped line to its encoded byte value.
-// The encoded byte skips 0x00 (marker) and 0x0a (newline) to avoid
-// conflicting with the line delimiter used by bufio.Reader.ReadString.
-var dictLookup map[string]byte
+// dictLookup mirrors the lookup map built by linesubst.New, exposed at
+// package level so the package's own tests can verify dictionary integrity.
+var dictLookup = buildDictLookup()
 
-// encodeIndex maps a dictionary index (0..104) to an encoded byte,
-// skipping 0x00 and 0x0a.
-func encodeIndex(i int) byte {
-	b := i + 1 // skip 0x00
-	if b >= 0x0a {
-		b++ // skip 0x0a
-	}
-	return byte(b)
-}
-
-// decodeIndex maps an encoded byte back to a dictionary index.
-func decodeIndex(b byte) int {
-	i := int(b)
-	if i > 0x0a {
-		i-- // undo 0x0a skip
-	}
-	i-- // undo 0x00 skip
-	return i
-}
-
-func init() {
-	dictLookup = make(map[string]byte, len(dict))
+func buildDictLookup() map[string]byte {
+	m := make(map[string]byte, len(dict))
 	for i, s := range dict {
-		dictLookup[s] = encodeIndex(i)
+		m[s] = linesubst.EncodeIndex(i)
 	}
+	return m
 }
+
+func encodeIndex(i int) byte { return linesubst.EncodeIndex(i) }
+func decodeIndex(b byte) int { return linesubst.DecodeIndex(b) }
 
 // GoLineSubst implements the go-line-subst/v1 transform.
-type GoLineSubst struct{}
+type GoLineSubst struct {
+	*linesubst.LineSubst
+}
 
 // NewGoLineSubst returns a new GoLineSubst transform.
-func NewGoLineSubst() *GoLineSubst { return &GoLineSubst{} }
+func NewGoLineSubst() *GoLineSubst {
+	return &GoLineSubst{
+		LineSubst: linesubst.New(goLineSubstID, dict[:], applicable),
+	}
+}
 
-// ID returns the stable transform identifier.
-func (g *GoLineSubst) ID() marc.TransformID { return goLineSubstID }
-
-// Applicable returns true for .go files with size > 0.
-func (g *GoLineSubst) Applicable(_ context.Context, e marc.Entry, facts marc.Facts) bool {
+func applicable(e marc.Entry, facts marc.Facts) bool {
 	return filepath.Ext(e.RelPath) == ".go" && facts.Size > 0
-}
-
-// CostEstimate returns estimated gain and CPU cost.
-func (g *GoLineSubst) CostEstimate(_ marc.Entry, facts marc.Facts) (gainBytes, cpuUnits int64) {
-	return facts.Size / 10, facts.Size / 1024
-}
-
-// Apply reads src line-by-line, replacing dictionary-matched lines with
-// 2-byte tokens (\x00 + index). The result is written as a single blob.
-// Returns handled=false if the content contains NUL bytes.
-func (g *GoLineSubst) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
-	reader := bufio.NewReaderSize(src, 64*1024)
-	var buf bytes.Buffer
-
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			// NUL safety: if any line contains \x00, bail out.
-			if strings.ContainsRune(line, 0x00) {
-				return marc.Result{}, false, nil
-			}
-
-			// Separate the trailing \n if present.
-			hasNewline := strings.HasSuffix(line, "\n")
-			content := line
-			if hasNewline {
-				content = line[:len(line)-1]
-			}
-
-			// Strip leading whitespace (tabs and spaces only).
-			stripped := strings.TrimLeft(content, "\t ")
-			prefix := content[:len(content)-len(stripped)]
-
-			if idx, ok := dictLookup[stripped]; ok {
-				buf.WriteString(prefix)
-				buf.WriteByte(0x00)
-				buf.WriteByte(idx)
-			} else {
-				buf.WriteString(content)
-			}
-			if hasNewline {
-				buf.WriteByte('\n')
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return marc.Result{}, false, fmt.Errorf("go-line-subst: read: %w", err)
-		}
-	}
-
-	id, err := sink.Write(ctx, bytes.NewReader(buf.Bytes()))
-	if err != nil {
-		return marc.Result{}, false, fmt.Errorf("go-line-subst: write blob: %w", err)
-	}
-
-	return marc.Result{BlobIDs: []marc.BlobID{id}}, true, nil
-}
-
-// Reverse reconstructs the original .go file from the substituted blob.
-func (g *GoLineSubst) Reverse(_ context.Context, r marc.Result, blobs marc.BlobReader, dst io.Writer) error {
-	if len(r.BlobIDs) == 0 {
-		return nil
-	}
-
-	rc, err := blobs.Open(r.BlobIDs[0])
-	if err != nil {
-		return fmt.Errorf("go-line-subst: open blob: %w", err)
-	}
-	defer func() { _ = rc.Close() }()
-
-	reader := bufio.NewReaderSize(rc, 64*1024)
-	w := bufio.NewWriter(dst)
-
-	for {
-		line, err := reader.ReadString('\n')
-		if len(line) > 0 {
-			hasNewline := strings.HasSuffix(line, "\n")
-			content := line
-			if hasNewline {
-				content = line[:len(line)-1]
-			}
-
-			if idx := strings.IndexByte(content, 0x00); idx >= 0 {
-				prefix := content[:idx]
-				if idx+1 < len(content) {
-					dictIdx := decodeIndex(content[idx+1])
-					if dictIdx >= 0 && dictIdx < len(dict) {
-						if _, err := w.WriteString(prefix); err != nil {
-							return err
-						}
-						if _, err := w.WriteString(dict[dictIdx]); err != nil {
-							return err
-						}
-					} else {
-						if _, err := w.WriteString(content); err != nil {
-							return err
-						}
-					}
-				} else {
-					if _, err := w.WriteString(content); err != nil {
-						return err
-					}
-				}
-			} else {
-				if _, err := w.WriteString(content); err != nil {
-					return err
-				}
-			}
-			if hasNewline {
-				if err := w.WriteByte('\n'); err != nil {
-					return err
-				}
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("go-line-subst: read blob: %w", err)
-		}
-	}
-
-	return w.Flush()
 }
