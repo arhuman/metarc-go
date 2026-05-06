@@ -68,7 +68,7 @@ fulltest:
 
 ## test: run all tests with verbose output (skips long tests; use fulltest to include them)
 test:
-	go test -short -v ./...
+	go test -short -v -cover ./...
 
 ## tidy: format Go code and tidy the module file
 tidy:
