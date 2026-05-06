@@ -167,21 +167,42 @@ func printPlanSummary(cmd *cobra.Command, marcPath string) error {
 		return fmt.Errorf("query plan summary: %w", err)
 	}
 
-	var total, applied int64
+	var total, applied, totalGain int64
 	for _, s := range stats {
 		total += s.Applied + s.Skipped
 		applied += s.Applied
+		totalGain += s.EstimatedGain
 	}
 
 	cmd.Printf("\n--- Plan Summary ---\n")
 	cmd.Printf("Total entries:      %d\n", total)
 	cmd.Printf("Transforms applied: %d\n", applied)
+	cmd.Printf("Estimated gain:     %s\n", formatBytes(totalGain))
 
 	cmd.Printf("\nBreakdown by transform:\n")
 	for _, s := range stats {
-		cmd.Printf("  %-20s %5d applied  %5d skipped\n", s.TransformID, s.Applied, s.Skipped)
+		cmd.Printf("  %-20s %5d applied  %5d skipped  ~%s saved\n",
+			s.TransformID, s.Applied, s.Skipped, formatBytes(s.EstimatedGain))
 	}
 	return nil
+}
+
+func formatBytes(n int64) string {
+	const (
+		kb = 1024
+		mb = kb * 1024
+		gb = mb * 1024
+	)
+	switch {
+	case n >= gb:
+		return fmt.Sprintf("%.1f GB", float64(n)/float64(gb))
+	case n >= mb:
+		return fmt.Sprintf("%.1f MB", float64(n)/float64(mb))
+	case n >= kb:
+		return fmt.Sprintf("%.1f KB", float64(n)/float64(kb))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
 
 // parseByteSize parses a human-readable byte size like "4MB", "16mb", "1024".

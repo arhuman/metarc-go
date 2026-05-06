@@ -266,6 +266,28 @@ Implement v2: exact-match, 2-byte tokens (`\x00` + 1-byte dictionary index). Sta
 
 ---
 
+## ADR-016: Human-readable byte sizes use SI labels with binary (1024) divisors
+
+**Status**: Accepted  
+**Date**: 2026-05
+
+### Context
+CLI output (bench, explain/plan summary) displays byte sizes in human-readable form. Two conventions exist:
+- **IEC**: labels KiB/MiB/GiB, divisors 1024/1024²/1024³
+- **SI**: labels KB/MB/GB, divisors 1000/1000²/1000³
+
+Most Unix tools (ls, du, df without `-H`) historically use KB/MB/GB with 1024-based divisors — a hybrid that is technically incorrect but widely understood by users of developer tooling.
+
+### Decision
+Use **SI labels (KB/MB/GB/TB) with binary divisors (powers of 1024)**. This matches the convention of common Unix tools and is what developers expect when inspecting archive or benchmark output.
+
+### Consequences
+- (+) Familiar to the target audience (developers, sysadmins)
+- (+) Consistent across all size-formatting functions (`humanBytes` in bench, `formatBytes` in archive)
+- (-) Technically imprecise: displayed "GB" means 2³⁰ bytes, not 10⁹
+
+---
+
 ## ADR-015: SQL schema divergence from the initial spec
 
 **Status**: Accepted  
