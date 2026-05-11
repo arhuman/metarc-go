@@ -4,7 +4,6 @@
 package license
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -44,18 +43,28 @@ var fingerprints map[[32]byte]licenseEntry
 // copyright line.
 var bodyFingerprints map[[32]byte]licenseEntry
 
+// spdxIndex maps SPDX ID to its licenseEntry for O(1) lookup during Reverse.
+var spdxIndex map[string]licenseEntry
+
 // canonicalTexts is the ordered list of supported licenses.
+// Internal SPDX IDs that are not real SPDX identifiers (Apache-2.0-curly,
+// BSD-3-Clause-Go-LLC, BSD-3-Clause-Go-Inc) are used only for reconstruction
+// via spdxIndex and are never exposed to users.
 var canonicalTexts = []licenseEntry{
 	{SPDX: "MIT", Text: mitText},
 	{SPDX: "Apache-2.0", Text: apache2Text},
+	{SPDX: "Apache-2.0-curly", Text: apache2CurlyText},
 	{SPDX: "BSD-2-Clause", Text: bsd2Text},
 	{SPDX: "BSD-3-Clause", Text: bsd3Text},
+	{SPDX: "BSD-3-Clause-Go-LLC", Text: bsd3GoLLCText},
+	{SPDX: "BSD-3-Clause-Go-Inc", Text: bsd3GoIncText},
 	{SPDX: "ISC", Text: iscText},
 }
 
 func init() {
 	fingerprints = make(map[[32]byte]licenseEntry, len(canonicalTexts))
 	bodyFingerprints = make(map[[32]byte]licenseEntry, len(canonicalTexts))
+	spdxIndex = make(map[string]licenseEntry, len(canonicalTexts))
 	for _, l := range canonicalTexts {
 		norm := normalize(l.Text)
 		h := blake3.Sum256([]byte(norm))
@@ -64,6 +73,8 @@ func init() {
 		body := stripCopyrightLines(strings.Split(norm, "\n"))
 		bh := blake3.Sum256([]byte(strings.Join(body, "\n")))
 		bodyFingerprints[bh] = l
+
+		spdxIndex[l.SPDX] = l
 	}
 }
 
@@ -105,8 +116,11 @@ func (c *Canonical) Applicable(_ context.Context, e marc.Entry, _ marc.Facts) bo
 	return filenameRe.MatchString(base)
 }
 
-// CostEstimate returns optimistic gain and CPU cost.
-// Gain is the full file size (canonical blob is shared via dedup).
+// CostEstimate returns the gain and CPU cost.
+// Gain is the full file size: unlike blob transforms, license-canonical writes
+// zero bytes to the blob region — the canonical text is embedded in the binary
+// and only a compact params record (≤900 B) goes into the compressed catalog,
+// whose marginal cost is negligible (~10–30 B after catalog-level zstd).
 // CPU cost is low: one BLAKE3 body-hash lookup + a short Myers diff.
 func (c *Canonical) CostEstimate(_ marc.Entry, facts marc.Facts) (gainBytes, cpuUnits int64) {
 	return facts.Size, 512
@@ -167,7 +181,7 @@ func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src i
 
 	// Fast path: exact match against canonical template (including placeholders).
 	if entry, ok := fingerprints[h]; ok {
-		return c.writeResult(ctx, sink, entry, leading, trailing, nil)
+		return c.writeResult(entry, leading, trailing, nil)
 	}
 
 	// Body-hash path: strip copyright lines, hash the body, look up.
@@ -198,18 +212,12 @@ func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src i
 		return marc.Result{}, false, nil // diff too large, not a real match
 	}
 
-	return c.writeResult(ctx, sink, entry, leading, trailing, paramsJSON)
+	return c.writeResult(entry, leading, trailing, paramsJSON)
 }
 
-// writeResult writes the canonical template blob and returns the result.
-// If paramsJSON is nil, it marshals a minimal params with SPDX + leading/trailing only.
-func (c *Canonical) writeResult(ctx context.Context, sink marc.BlobSink, entry licenseEntry, leading, trailing string, paramsJSON []byte) (marc.Result, bool, error) {
-	canonicalBytes := []byte(normalize(entry.Text))
-	blobID, err := sink.Write(ctx, bytes.NewReader(canonicalBytes))
-	if err != nil {
-		return marc.Result{}, false, fmt.Errorf("license-canonical: write blob: %w", err)
-	}
-
+// writeResult returns the transform result. The canonical text is embedded in
+// the binary (spdxIndex), so no blob is written — only SPDX + diff in Params.
+func (c *Canonical) writeResult(entry licenseEntry, leading, trailing string, paramsJSON []byte) (marc.Result, bool, error) {
 	if paramsJSON == nil {
 		var marshalErr error
 		paramsJSON, marshalErr = json.Marshal(params{SPDX: entry.SPDX, Leading: leading, Trailing: trailing})
@@ -217,42 +225,48 @@ func (c *Canonical) writeResult(ctx context.Context, sink marc.BlobSink, entry l
 			return marc.Result{}, false, fmt.Errorf("license-canonical: marshal params: %w", marshalErr)
 		}
 	}
-
-	return marc.Result{
-		BlobIDs: []marc.BlobID{blobID},
-		Params:  paramsJSON,
-	}, true, nil
+	return marc.Result{Params: paramsJSON}, true, nil
 }
 
-// Reverse reconstructs the original file from the canonical blob and diff ops.
+// Reverse reconstructs the original file from the SPDX ID and diff ops stored
+// in Params. The canonical text is looked up from the embedded spdxIndex.
+//
+// Legacy path: archives produced before this fix stored the canonical text as
+// a blob (BlobIDs non-empty). Those archives are still handled by reading the
+// blob directly, so old .marc files remain extractable.
 func (c *Canonical) Reverse(_ context.Context, r marc.Result, blobs marc.BlobReader, dst io.Writer) error {
-	if len(r.BlobIDs) == 0 {
-		return nil
-	}
-	rc, err := blobs.Open(r.BlobIDs[0])
-	if err != nil {
-		return fmt.Errorf("license-canonical: open blob: %w", err)
-	}
-	defer func() { _ = rc.Close() }()
-
-	templateData, err := io.ReadAll(rc)
-	if err != nil {
-		return fmt.Errorf("license-canonical: read blob: %w", err)
-	}
-
 	var p params
 	if err := json.Unmarshal(r.Params, &p); err != nil {
 		return fmt.Errorf("license-canonical: unmarshal params: %w", err)
 	}
 
+	var templateText string
+	if len(r.BlobIDs) > 0 {
+		// Legacy: canonical text was written as a blob.
+		rc, err := blobs.Open(r.BlobIDs[0])
+		if err != nil {
+			return fmt.Errorf("license-canonical: open blob: %w", err)
+		}
+		defer func() { _ = rc.Close() }()
+		data, err := io.ReadAll(rc)
+		if err != nil {
+			return fmt.Errorf("license-canonical: read blob: %w", err)
+		}
+		templateText = string(data)
+	} else {
+		entry, ok := spdxIndex[p.SPDX]
+		if !ok {
+			return fmt.Errorf("license-canonical: unknown SPDX ID %q", p.SPDX)
+		}
+		templateText = normalize(entry.Text)
+	}
+
 	// Reconstruct original content.
 	var out string
 	if len(p.Ops) == 0 {
-		// No diff ops: file was identical to the canonical template.
-		out = string(templateData)
+		out = templateText
 	} else {
-		// Apply diff to reconstruct original.
-		templateLines := strings.Split(string(templateData), "\n")
+		templateLines := strings.Split(templateText, "\n")
 		ops := expandOps(p.Ops)
 		original, applyErr := linediff.Apply(templateLines, ops)
 		if applyErr != nil {
@@ -269,7 +283,7 @@ func (c *Canonical) Reverse(_ context.Context, r marc.Result, blobs marc.BlobRea
 	} else if p.TrailingNL {
 		out += "\n"
 	}
-	_, err = io.WriteString(dst, out)
+	_, err := io.WriteString(dst, out)
 	return err
 }
 

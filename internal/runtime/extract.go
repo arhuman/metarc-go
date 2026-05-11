@@ -120,21 +120,27 @@ func extractFile(ctx context.Context, r *store.Reader, fullPath, relPath string,
 	}
 	defer func() { _ = f.Close() }()
 
-	if e.BlobID != 0 {
+	if e.BlobID != 0 || e.Transform != "" {
 		t, err := resolveTransform(e.Transform)
 		if err != nil {
 			return fmt.Errorf("extract: %s: %w", relPath, err)
 		}
 		if t != nil {
 			// Use the transform's Reverse to reconstruct the file.
+			// BlobIDs may be empty for transforms that embed their reference
+			// data in the binary (e.g. license-canonical/v1).
+			var blobIDs []marc.BlobID
+			if e.BlobID != 0 {
+				blobIDs = []marc.BlobID{marc.BlobID(e.BlobID)}
+			}
 			result := marc.Result{
-				BlobIDs: []marc.BlobID{marc.BlobID(e.BlobID)},
+				BlobIDs: blobIDs,
 				Params:  e.Params,
 			}
 			if err := t.Reverse(ctx, result, r.BlobReaderAdapter(), f); err != nil {
 				return fmt.Errorf("extract: reverse %s for %s: %w", e.Transform, relPath, err)
 			}
-		} else {
+		} else if e.BlobID != 0 {
 			// Raw (no transform): copy blob directly.
 			blob, err := r.OpenBlob(e.BlobID)
 			if err != nil {

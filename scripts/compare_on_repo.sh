@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./compare_on_repo.sh --name <name> --repo <repourl> [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--hot]
+# Usage: ./compare_on_repo.sh --name <name> --repo <repourl> [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--hot] [--marc-args "..."]
 #
 # Clones <repourl> into /tmp/<name>, archives with tar and marc,
 # extracts marc into /tmp/<name>2, compares, and prints one markdown
@@ -56,6 +56,7 @@ MODE=""
 COMPRESSION="zstd"
 TYPE="legacy"
 COMMIT=""
+MARC_EXTRA_ARGS=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -66,12 +67,13 @@ while [[ $# -gt 0 ]]; do
         --type)        TYPE="$2"; shift 2 ;;
         --commit)      COMMIT="$2"; shift 2 ;;
         --hot)         export BENCH_HOT=1; shift ;;
+        --marc-args)   MARC_EXTRA_ARGS="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
 
 if [[ -z "$NAME" || -z "$REPO" ]]; then
-    echo "Usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--hot]" >&2
+    echo "Usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--hot] [--marc-args \"...\"]" >&2
     exit 1
 fi
 
@@ -151,7 +153,7 @@ else
     tar_cmd()         { tar czf "$TAR_FILE" -C "$WORKDIR" "$NAME" 2>/dev/null; }
     tar_extract_cmd() { tar xzf "$TAR_FILE" -C "$TAR_EXTRACT_DIR" 2>/dev/null; }
 fi
-marc_archive_cmd() { "$MARC" archive "$MARC_FILE" "$DIR" 2>/dev/null; }
+marc_archive_cmd() { "$MARC" archive $MARC_EXTRA_ARGS "$MARC_FILE" "$DIR" 2>/dev/null; }
 marc_extract_cmd() { "$MARC" extract "$MARC_FILE" -C "$DIR2" 2>/dev/null; }
 
 # cleanup from previous run

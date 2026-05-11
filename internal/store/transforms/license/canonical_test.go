@@ -145,8 +145,8 @@ func TestApply_MIT(t *testing.T) {
 		t.Fatal("expected handled=true for known license")
 	}
 
-	if len(result.BlobIDs) != 1 {
-		t.Fatalf("expected 1 blob, got %d", len(result.BlobIDs))
+	if len(result.BlobIDs) != 0 {
+		t.Fatalf("expected 0 blobs (canonical text is embedded), got %d", len(result.BlobIDs))
 	}
 
 	var p params
@@ -192,9 +192,8 @@ func TestRoundTrip_license(t *testing.T) {
 		t.Fatal("expected handled=true")
 	}
 
-	blobs := &fakeBlobs{blobs: sink.blobs}
 	var buf bytes.Buffer
-	if err := c.Reverse(ctx, result, blobs, &buf); err != nil {
+	if err := c.Reverse(ctx, result, nil, &buf); err != nil {
 		t.Fatalf("Reverse: %v", err)
 	}
 
@@ -263,9 +262,8 @@ func TestRoundTrip_MIT_realCopyright(t *testing.T) {
 		t.Fatal("expected handled=true")
 	}
 
-	blobs := &fakeBlobs{blobs: sink.blobs}
 	var buf bytes.Buffer
-	if err := c.Reverse(ctx, result, blobs, &buf); err != nil {
+	if err := c.Reverse(ctx, result, nil, &buf); err != nil {
 		t.Fatalf("Reverse: %v", err)
 	}
 
@@ -276,11 +274,14 @@ func TestRoundTrip_MIT_realCopyright(t *testing.T) {
 
 func TestRoundTrip_AllLicenses(t *testing.T) {
 	copyrights := map[string]string{
-		"MIT":          "Copyright (c) 2023 Acme Corp",
-		"Apache-2.0":   "   Copyright 2023 Acme Corp",
-		"BSD-2-Clause": "Copyright (c) 2022 Jane Doe",
-		"BSD-3-Clause": "Copyright (c) 2021 John Smith",
-		"ISC":          "Copyright (c) 2020 Open Source Foundation",
+		"MIT":                  "Copyright (c) 2023 Acme Corp",
+		"Apache-2.0":           "   Copyright 2023 Acme Corp",
+		"Apache-2.0-curly":     "   Copyright 2023 Acme Corp",
+		"BSD-2-Clause":         "Copyright (c) 2022 Jane Doe",
+		"BSD-3-Clause":         "Copyright (c) 2021 John Smith",
+		"BSD-3-Clause-Go-LLC":  "Copyright 2023 The Go Authors.",
+		"BSD-3-Clause-Go-Inc":  "Copyright (c) 2023 The Go Authors. All rights reserved.",
+		"ISC":                  "Copyright (c) 2020 Open Source Foundation",
 	}
 
 	for _, tmpl := range canonicalTexts {
@@ -310,9 +311,8 @@ func TestRoundTrip_AllLicenses(t *testing.T) {
 				t.Fatalf("expected SPDX=%s, got %q", tmpl.SPDX, p.SPDX)
 			}
 
-			blobs := &fakeBlobs{blobs: sink.blobs}
 			var buf bytes.Buffer
-			if err := c.Reverse(ctx, result, blobs, &buf); err != nil {
+			if err := c.Reverse(ctx, result, nil, &buf); err != nil {
 				t.Fatalf("Reverse: %v", err)
 			}
 
@@ -414,9 +414,8 @@ func TestRoundTrip_preservesExactWhitespace(t *testing.T) {
 				t.Fatalf("expected handled=true")
 			}
 
-			blobs := &fakeBlobs{blobs: sink.blobs}
 			var buf bytes.Buffer
-			if err := c.Reverse(ctx, result, blobs, &buf); err != nil {
+			if err := c.Reverse(ctx, result, nil, &buf); err != nil {
 				t.Fatalf("Reverse: %v", err)
 			}
 

@@ -23,6 +23,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// cachedTransformResult holds the output of a params-only transform (no blobs)
+// so identical files can reuse it without re-running the transform.
+type cachedTransformResult struct {
+	transformID   string
+	params        []byte
+	estimatedGain int64
+	estimatedCPU  int64
+}
+
 // Writer creates a single-file .marc archive.
 //
 // Layout: [Magic 8B][Blob chunks...][Catalog chunk][Footer 24B]
@@ -48,6 +57,10 @@ type Writer struct {
 	solidAcc        *solidAccumulator // non-nil when solid block compression is enabled
 	solidSize       int64             // solid block size threshold (0 = disabled)
 	zstdCfg         ZstdConfig        // per-chunk-type zstd encoder settings
+	// resultCache maps source SHA to a cached params-only transform result so
+	// that identical files (e.g. vendored license files) reuse the same params
+	// record instead of each occupying a separate entry in the archive.
+	resultCache     map[[32]byte]cachedTransformResult
 }
 
 const batchSize = 1000
@@ -164,11 +177,12 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 		outFile:    outFile,
 		db:         db,
 		dbPath:     dbPath,
-		nameCache:  make(map[string]int64),
-		parentMap:  make(map[string]int64),
-		compressor: "zstd",
-		fileHasher: blake3.New(),
-		zstdCfg:    DefaultZstdConfig(),
+		nameCache:   make(map[string]int64),
+		parentMap:   make(map[string]int64),
+		compressor:  "zstd",
+		fileHasher:  blake3.New(),
+		zstdCfg:     DefaultZstdConfig(),
+		resultCache: make(map[[32]byte]cachedTransformResult),
 	}
 
 	for _, opt := range opts {
@@ -401,7 +415,28 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 	var handled bool
 	var decision plan.Decision
 
+	// For params-only transforms (no blobs written), identical files produce
+	// identical params. Check the result cache so each duplicate reuses the
+	// first occurrence's params instead of re-running the transform.
+	if hasSHA {
+		if cached, ok := w.resultCache[sha]; ok {
+			transformID = cached.transformID
+			params = cached.params
+			handled = true
+			decision = plan.Decision{
+				TransformID:   cached.transformID,
+				EstimatedGain: cached.estimatedGain,
+				EstimatedCPU:  cached.estimatedCPU,
+				Applied:       true,
+				Reason:        cached.transformID + " (cached result reuse)",
+			}
+		}
+	}
+
 	for _, t := range plan.Registry {
+		if handled {
+			break
+		}
 		if plan.Disabled[string(t.ID())] {
 			continue
 		}
@@ -441,6 +476,19 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 		// Not handled -- reset file position for next transform.
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
 			return fmt.Errorf("store: seek %s: %w", e.Path, err)
+		}
+	}
+
+	// Populate the result cache for the first occurrence of a params-only result
+	// (no blobs) so subsequent identical files skip re-running the transform.
+	if handled && len(blobIDs) == 0 && hasSHA {
+		if _, exists := w.resultCache[sha]; !exists {
+			w.resultCache[sha] = cachedTransformResult{
+				transformID:   transformID,
+				params:        params,
+				estimatedGain: decision.EstimatedGain,
+				estimatedCPU:  decision.EstimatedCPU,
+			}
 		}
 	}
 
