@@ -70,7 +70,7 @@ type templateParams struct {
 
 // Apply reads the log content, finds a common prefix, and stores suffixes.
 // Returns handled=false if the content is not suitable for template extraction.
-func (t *Template) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
+func (t *Template) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.ReadSeeker, sink marc.BlobSink) (marc.Result, bool, error) {
 	data, err := io.ReadAll(src)
 	if err != nil {
 		return marc.Result{}, false, fmt.Errorf("log-template: read: %w", err)

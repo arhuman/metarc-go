@@ -60,7 +60,7 @@ type Writer struct {
 	// resultCache maps source SHA to a cached params-only transform result so
 	// that identical files (e.g. vendored license files) reuse the same params
 	// record instead of each occupying a separate entry in the archive.
-	resultCache     map[[32]byte]cachedTransformResult
+	resultCache map[[32]byte]cachedTransformResult
 }
 
 const batchSize = 1000
@@ -174,9 +174,9 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 	}
 
 	w := &Writer{
-		outFile:    outFile,
-		db:         db,
-		dbPath:     dbPath,
+		outFile:     outFile,
+		db:          db,
+		dbPath:      dbPath,
 		nameCache:   make(map[string]int64),
 		parentMap:   make(map[string]int64),
 		compressor:  "zstd",

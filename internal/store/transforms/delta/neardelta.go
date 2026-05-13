@@ -33,7 +33,7 @@ func (n *NearDup) CostEstimate(_ marc.Entry, _ marc.Facts) (gainBytes, cpuUnits 
 }
 
 // Apply always returns handled=false (stub).
-func (n *NearDup) Apply(_ context.Context, _ marc.Entry, _ marc.Facts, _ io.Reader, _ marc.BlobSink) (marc.Result, bool, error) {
+func (n *NearDup) Apply(_ context.Context, _ marc.Entry, _ marc.Facts, _ io.ReadSeeker, _ marc.BlobSink) (marc.Result, bool, error) {
 	return marc.Result{}, false, nil
 }
 

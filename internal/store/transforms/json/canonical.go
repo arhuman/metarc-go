@@ -44,7 +44,7 @@ func (c *Canonical) CostEstimate(_ marc.Entry, facts marc.Facts) (gainBytes, cpu
 
 // Apply reads the JSON content, re-encodes it canonically, and writes to sink.
 // Returns handled=false if the content is not valid JSON.
-func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
+func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.ReadSeeker, sink marc.BlobSink) (marc.Result, bool, error) {
 	data, err := io.ReadAll(src)
 	if err != nil {
 		return marc.Result{}, false, fmt.Errorf("json-canonical: read: %w", err)

@@ -33,7 +33,7 @@ func (d *Dedup) CostEstimate(e marc.Entry, facts marc.Facts) (gainBytes, cpuUnit
 
 // Apply tries to dedup via the pre-computed SHA (zero I/O). If no dedup hit,
 // it returns handled=false to let the next transform in the chain try.
-func (d *Dedup) Apply(_ context.Context, _ marc.Entry, facts marc.Facts, _ io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
+func (d *Dedup) Apply(_ context.Context, _ marc.Entry, facts marc.Facts, _ io.ReadSeeker, sink marc.BlobSink) (marc.Result, bool, error) {
 	zeroSHA := [32]byte{}
 	if facts.SHA != zeroSHA {
 		if id, ok := sink.Reuse(facts.SHA); ok {

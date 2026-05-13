@@ -274,14 +274,14 @@ func TestRoundTrip_MIT_realCopyright(t *testing.T) {
 
 func TestRoundTrip_AllLicenses(t *testing.T) {
 	copyrights := map[string]string{
-		"MIT":                  "Copyright (c) 2023 Acme Corp",
-		"Apache-2.0":           "   Copyright 2023 Acme Corp",
-		"Apache-2.0-curly":     "   Copyright 2023 Acme Corp",
-		"BSD-2-Clause":         "Copyright (c) 2022 Jane Doe",
-		"BSD-3-Clause":         "Copyright (c) 2021 John Smith",
-		"BSD-3-Clause-Go-LLC":  "Copyright 2023 The Go Authors.",
-		"BSD-3-Clause-Go-Inc":  "Copyright (c) 2023 The Go Authors. All rights reserved.",
-		"ISC":                  "Copyright (c) 2020 Open Source Foundation",
+		"MIT":                 "Copyright (c) 2023 Acme Corp",
+		"Apache-2.0":          "   Copyright 2023 Acme Corp",
+		"Apache-2.0-curly":    "   Copyright 2023 Acme Corp",
+		"BSD-2-Clause":        "Copyright (c) 2022 Jane Doe",
+		"BSD-3-Clause":        "Copyright (c) 2021 John Smith",
+		"BSD-3-Clause-Go-LLC": "Copyright 2023 The Go Authors.",
+		"BSD-3-Clause-Go-Inc": "Copyright (c) 2023 The Go Authors. All rights reserved.",
+		"ISC":                 "Copyright (c) 2020 Open Source Foundation",
 	}
 
 	for _, tmpl := range canonicalTexts {

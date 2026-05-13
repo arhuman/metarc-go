@@ -4,6 +4,7 @@ import (
 	"github.com/arhuman/metarc-go/internal/store/transforms"
 	"github.com/arhuman/metarc-go/internal/store/transforms/goline"
 	"github.com/arhuman/metarc-go/internal/store/transforms/license"
+	"github.com/arhuman/metarc-go/internal/store/transforms/logdate"
 	"github.com/arhuman/metarc-go/internal/store/transforms/passthrough"
 	"github.com/arhuman/metarc-go/pkg/marc"
 )
@@ -27,5 +28,6 @@ func init() {
 		passthrough.New(),       // skip zstd for already-compressed extensions (lossless)
 		goline.NewGoLineSubst(), // line substitution for .go files (lossless)
 		license.NewCanonical(),  // license template diff (lossless via Myers diff)
+		logdate.New(),           // timestamp substitution for log files (lossless)
 	}
 }

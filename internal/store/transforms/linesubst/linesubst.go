@@ -85,7 +85,7 @@ func (ls *LineSubst) CostEstimate(_ marc.Entry, f marc.Facts) (gainBytes, cpuUni
 // Apply reads src line-by-line, replacing dictionary-matched lines with
 // 2-byte tokens (\x00 + index). The result is written as a single blob.
 // Returns handled=false if the content contains NUL bytes.
-func (ls *LineSubst) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
+func (ls *LineSubst) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.ReadSeeker, sink marc.BlobSink) (marc.Result, bool, error) {
 	reader := bufio.NewReaderSize(src, 64*1024)
 	var buf bytes.Buffer
 

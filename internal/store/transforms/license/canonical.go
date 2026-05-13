@@ -167,7 +167,7 @@ func trimWhitespace(s string) (leading, body, trailing string) {
 // against known license templates. On exact match, no diff is stored. On
 // body-hash match (differing only in copyright line), a compact Myers diff
 // is stored in Params for lossless reconstruction.
-func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
+func (c *Canonical) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.ReadSeeker, sink marc.BlobSink) (marc.Result, bool, error) {
 	data, err := io.ReadAll(src)
 	if err != nil {
 		return marc.Result{}, false, fmt.Errorf("license-canonical: read: %w", err)

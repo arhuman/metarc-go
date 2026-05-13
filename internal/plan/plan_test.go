@@ -26,7 +26,7 @@ func (f *fakeTransform) CostEstimate(_ marc.Entry, _ marc.Facts) (int64, int64) 
 	return f.gain, f.cpu
 }
 
-func (f *fakeTransform) Apply(_ context.Context, _ marc.Entry, _ marc.Facts, _ io.Reader, _ marc.BlobSink) (marc.Result, bool, error) {
+func (f *fakeTransform) Apply(_ context.Context, _ marc.Entry, _ marc.Facts, _ io.ReadSeeker, _ marc.BlobSink) (marc.Result, bool, error) {
 	return marc.Result{}, false, nil
 }
 

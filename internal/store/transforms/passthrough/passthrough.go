@@ -104,7 +104,7 @@ func (p *Passthrough) CostEstimate(_ marc.Entry, facts marc.Facts) (gainBytes, c
 // available; falls back to sink.Write (which compresses) for sinks that
 // don't implement WriteRaw. Always returns handled=true so the transform
 // chain stops here.
-func (p *Passthrough) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.Reader, sink marc.BlobSink) (marc.Result, bool, error) {
+func (p *Passthrough) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.ReadSeeker, sink marc.BlobSink) (marc.Result, bool, error) {
 	var (
 		id  marc.BlobID
 		err error

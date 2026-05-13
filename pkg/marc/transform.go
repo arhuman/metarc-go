@@ -52,7 +52,7 @@ type Transform interface {
 
 	// Apply reads src, writes blobs through sink, returns a Result.
 	// The bool return means "handled": true = halt chain, false = pass to next transform.
-	Apply(ctx context.Context, e Entry, facts Facts, src io.Reader, sink BlobSink) (Result, bool, error)
+	Apply(ctx context.Context, e Entry, facts Facts, src io.ReadSeeker, sink BlobSink) (Result, bool, error)
 
 	// Reverse reconstructs original bytes from Result + blob access.
 	Reverse(ctx context.Context, r Result, blobs BlobReader, dst io.Writer) error
