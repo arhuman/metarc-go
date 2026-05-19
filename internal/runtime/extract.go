@@ -18,7 +18,7 @@ import (
 
 // Extract restores a .marc archive into destDir.
 func Extract(ctx context.Context, marcPath, destDir string) error {
-	slog.Info("extracting", "archive", marcPath, "dest", destDir)
+	slog.Debug("extracting", "archive", marcPath, "dest", destDir)
 
 	r, err := store.OpenReader(marcPath)
 	if err != nil {
@@ -104,7 +104,7 @@ func Extract(ctx context.Context, marcPath, destDir string) error {
 		return fmt.Errorf("runtime.Extract: restore dir times: %w", err)
 	}
 
-	slog.Info("extract complete", "entries", count)
+	slog.Debug("extract complete", "entries", count)
 	return nil
 }
 

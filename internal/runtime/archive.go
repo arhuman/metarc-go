@@ -151,16 +151,16 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 		// train against the first source; this is a pragmatic default that
 		// keeps the code simple while still benefiting cross-file dedup.
 		trainRoot := roots[0]
-		slog.Info("training zstd dictionary (prescan)", "root", trainRoot)
+		slog.Debug("training zstd dictionary (prescan)", "root", trainRoot)
 		dictLevel := store.ResolveZstdConfig(aopts.ZstdLevels).Dict
 		dict, err := store.TrainDictionaryWithLevel(trainRoot, 0, 0, dictLevel)
 		if err != nil {
 			slog.Warn("dict training failed, continuing without dictionary", "err", err)
 		} else if dict != nil {
-			slog.Info("dictionary trained", "size", len(dict))
+			slog.Debug("dictionary trained", "size", len(dict))
 			opts = append(opts, store.WithDictCompress(dict))
 		} else {
-			slog.Info("not enough samples for dictionary training")
+			slog.Debug("not enough samples for dictionary training")
 		}
 	}
 
@@ -350,7 +350,7 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 		}
 	}
 
-	slog.Info("archive complete", "entries", count)
+	slog.Debug("archive complete", "entries", count)
 	return nil
 }
 
