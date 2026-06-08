@@ -37,10 +37,10 @@ type ZstdConfig struct {
 //     `--zstd-level-solid 7` keeps about half the ratio gain (-3.83% on
 //     kubernetes) at roughly 2× faster solid compression — a strong
 //     trade if you'd rather not pay the level-11 CPU bill.
-//   - Catalog: zstd.SpeedBetterCompression (level 7). The catalog is
-//     small and compressed once per archive; level 7 captures nearly all
-//     of level 11's gain (-0.59% vs -0.86% on kubernetes) for negligible
-//     extra time (~+0.6%).
+//   - Catalog: zstd.SpeedBestCompression (level 11). The catalog is
+//     compressed once per archive from a buffer, so it is off the hot
+//     path entirely: on kubernetes, level 11 shrinks the archive a
+//     further 0.67% over level 7 with no measurable time cost.
 //   - Dict: zstd.SpeedDefault (level 3). Active only under opt-in
 //     `--dict-compress`, where it sits on the hot path. Users who turn
 //     dict-compress on can override with `--zstd-level-dict 11`.
@@ -50,7 +50,7 @@ func DefaultZstdConfig() ZstdConfig {
 	return ZstdConfig{
 		Blob:    zstd.SpeedDefault,
 		Solid:   zstd.SpeedBestCompression,
-		Catalog: zstd.SpeedBetterCompression,
+		Catalog: zstd.SpeedBestCompression,
 		Dict:    zstd.SpeedDefault,
 	}
 }
