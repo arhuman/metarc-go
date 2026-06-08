@@ -203,7 +203,7 @@ CREATE INDEX idx_entries_parent ON entries(parent_id);
 -- Content-addressable blob store
 CREATE TABLE blobs (
     id           INTEGER PRIMARY KEY,
-    sha          BLOB UNIQUE NOT NULL,    -- BLAKE3-256 (32 bytes)
+    sha          BLOB NOT NULL,           -- BLAKE3-256 while writing, truncated to 16 bytes at finalize
     offset       INTEGER NOT NULL,        -- chunk header start in .marc file
     clen         INTEGER NOT NULL,        -- compressed length
     ulen         INTEGER NOT NULL,        -- uncompressed length
@@ -212,13 +212,14 @@ CREATE TABLE blobs (
     block_offset INTEGER                  -- byte offset within solid block
 );
 
--- Many-to-many: one entry may reference multiple blobs (ordered by seq)
+-- Many-to-many: one entry may reference multiple blobs (ordered by seq).
+-- WITHOUT ROWID: the primary key is the only B-tree, so the pairs are not stored twice.
 CREATE TABLE entry_blobs (
     entry_id INTEGER REFERENCES entries(id),
     seq      INTEGER,
     blob_id  INTEGER REFERENCES blobs(id),
     PRIMARY KEY (entry_id, seq)
-);
+) WITHOUT ROWID;
 
 -- Optional transform decision log (deleted unless --keep-plan-log)
 CREATE TABLE plan_log (
@@ -232,7 +233,7 @@ CREATE TABLE plan_log (
 ```
 
 **Key invariants:**
-- `blobs.sha` is UNIQUE → content-addressable dedup at hash level
+- `blobs.sha` is uniquely indexed **while writing** → content-addressable dedup at hash level. The index, along with those on `names.name` and `entries.parent_id`, is dropped at finalize: no reader queries them, and hash bytes are random enough that a second copy costs its full width in the compressed catalog (ADR-018). The stored value is then truncated to `marc.StoredSHALen` bytes.
 - `entries.parent_id` forms an implicit rooted tree (NULL = root ".")
 - `blobs.offset` points to the chunk **header**, not the payload (reader skips 5 bytes)
 - For solid blocks, `offset` is the solid block chunk header; `block_offset` is the slice start within the decompressed block

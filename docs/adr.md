@@ -357,3 +357,45 @@ The intra-extension order is scan order, so vendored copies of the same file lan
 - (-) Peak RSS on the kubernetes corpus rises to ~361 MiB archiving and ~349 MiB extracting, from 258/270 MiB. Both figures already exceeded the 256 MiB Phase-6 ceiling before this change; that ceiling needs re-deriving or the read cache (4 decompressed blocks, `reader.go`) needs shrinking.
 - (-) 64 MiB blocks measured better still on kubernetes (-2.58% vs 16 MiB) but only there, for 148 MiB more peak RSS. Available via `--solid-block-size`.
 - Item 5 of the compression roadmap (streaming segments) stays closed: the limit it targeted was the window, which is now sized correctly.
+
+---
+
+## ADR-018: The catalog carries no write-only structures
+
+**Status**: Accepted
+**Date**: 2026-08-14
+
+### Context
+
+Measuring the catalog rather than assuming its cost changed the priorities. On the kubernetes corpus (35 684 entries, 22 911 blobs) the catalog was 2.2 MB, or 7.4% of a 29.1 MB archive. That is not a rounding error, and it grows as files get smaller: on express it dominated.
+
+Breaking the uncompressed catalog down with `dbstat` showed where the bytes were, and one class behaves unlike the rest. Hash bytes are uniformly random: 22 911 BLAKE3 values extracted and recompressed at zstd level 19 went from 733 152 to 733 183 bytes, so they cost their full width no matter what the final compressor does. Everything else in the catalog (row headers, ids, offsets, repeated transform names) compresses to roughly a third.
+
+### Decision
+
+Four changes, none of which alter what the archive can express:
+
+1. **Write-only indexes are dropped before serialization.** `blobs.sha`, `names.name` and `entries.parent_id` are indexed to answer lookups the writer performs (dedup, name interning, parent resolution). Extraction joins names by id and walks entries by id, so no reader needs them. `UNIQUE` column constraints were replaced by explicit indexes to make them droppable, following the existing `idx_blobs_source_sha` precedent.
+2. **`entry_blobs` is `WITHOUT ROWID`**, collapsing its table and its `(entry_id, seq)` autoindex into a single B-tree.
+3. **`blobs.sha` stores a 16-byte prefix** (`marc.StoredSHALen`) once the archive is finalized. The truncation happens at finalize, so dedup, the transform result cache and the blob index all keep comparing full 32-byte hashes; only the serialized record narrows. At 128 bits, collision odds for a million-blob archive stay below 1e-26.
+4. **The catalog is compressed at level 11.** It is compressed once from a fully buffered copy, so the level never touches the hot path.
+
+Measured against the previous defaults, in archive bytes:
+
+| corpus | delta |
+|---|---|
+| express | -10.69% |
+| docker-compose | -9.91% |
+| kubernetes | -5.17% |
+| react | -4.90% |
+| loghub | -0.37% |
+
+The kubernetes catalog went from 2.2 MB (7.4% of the archive) to 1.1 MB (4.0%). Small corpora gain most, because the catalog is a larger share of a small archive.
+
+### Consequences
+
+- (+) The gain is arithmetic, not heuristic: it removes bytes rather than betting that a model predicts the data better. It applies to every corpus.
+- (+) Dedup semantics are unchanged, so no archive is at greater risk of a false content match while being written.
+- (-) `blobs.sha` is no longer a complete BLAKE3-256. Cross-archive deduplication (metacompression.md §11.5) remains possible but must compare prefixes. `Reader.QueryBlobSHAs` returns `[]byte` per blob rather than `[32]byte`.
+- (-) A catalog opened directly with `sqlite3` (the `marc inspect --raw` workflow) has no index on `parent_id` or `names.name`; ad-hoc queries filtering on those columns will table-scan. Recreate them locally if needed.
+- Not done, and measured as low value: moving the per-blob `offset`/`clen` of solid blobs into a `blocks` table. Those columns repeat identically across a block, so zstd already encodes them cheaply; the change is worth making only when `blocks` is needed for another reason, such as the inter-block dictionary of the compression roadmap.
