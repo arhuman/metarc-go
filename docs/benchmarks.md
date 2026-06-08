@@ -23,35 +23,44 @@ archived with `marc` vs `tar+zstd`, on the same machine.
 
 `./scripts/run_bench.sh --type size`
 
-_ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ marc: metarc version v0.10.0-11-ge24f0092-dirty (e24f0092, 2026-08-14T04:07:23Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
-| Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
-|------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 81.1M | 74.2M | 91.4% |
-| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 99.1% |
-| vuejs | 9.9M | 728 | 3.2M | 3.2M | 97.5% |
-| numpy |  50M | 2364 | 18.4M | 17.5M | 95.3% |
-| redis |  29M | 1780 | 8.9M | 8.4M | 93.7% |
-| bootstrap |  27M | 816 | 13.9M | 13.3M | 95.9% |
-| express | 1.6M | 238 | 345.6K | 339.3K | 98.2% |
-| react |  65M | 6884 | 18.5M | 17.1M | 92.4% |
+| Repo | Original size | Files | tar+zstd size | marc size | % size of tar | previous |
+|------|---------------|-------|-------------------------|-----------|---------------|----------|
+| kubernetes | 376M | 29838 | 81.1M | 73.7M | 90.8% | 91.4% |
+| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 98.4% | 99.1% |
+| vuejs | 9.9M | 728 | 3.2M | 3.2M | 96.9% | 97.5% |
+| numpy |  50M | 2364 | 18.4M | 17.5M | 95.2% | 95.3% |
+| redis |  28M | 1780 | 8.9M | 8.3M | 93.4% | 93.7% |
+| bootstrap |  28M | 816 | 14.1M | 13.5M | 95.9% | 95.9% |
+| express | 1.6M | 238 | 345.5K | 332.5K | 96.2% | 98.2% |
+| react |  66M | 6884 | 18.4M | 17.1M | 92.7% | 92.4% |
+
+> The `previous` column is the 2026-05-05 run (v0.8.0-5), for the solid-block
+> geometry change of 2026-08-14. Read it with one caveat: the bench archives
+> each clone **including its `.git`**, and a shallow clone does not repack
+> identically between runs, so the tar baseline itself moved (bootstrap 13.9M
+> to 14.1M, react 18.5M to 18.4M). react is the clearest case: marc produced
+> 17.1M in both runs and only the denominator changed. On the same corpora with
+> `.git` removed, the change measured -2.61% (express), -2.43% (docker-compose),
+> -1.65% (kubernetes) and -0.79% (react) in absolute archive bytes.
 
 #### vs tar+gz
 
  `./scripts/run_bench.sh --type size --compression gz`
 
-_ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T04:14:31Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ marc: metarc version v0.10.0-11-ge24f0092-dirty (e24f0092, 2026-08-14T04:07:23Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
-| Repo | Original size | Files | tar+gz size | marc size | % size of tar |
-|------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 90.0M | 74.2M | 82.4% |
-| docker-compose | 4.5M | 702 | 1.2M | 1.1M | 94.4% |
-| vuejs | 9.8M | 728 | 3.3M | 3.2M | 96.9% |
-| numpy |  50M | 2364 | 18.9M | 17.5M | 92.7% |
-| redis |  28M | 1780 | 9.0M | 8.4M | 92.7% |
-| bootstrap |  27M | 816 | 14.7M | 13.3M | 90.3% |
-| express | 1.6M | 238 | 354.1K | 339.3K | 95.8% |
-| react |  66M | 6884 | 19.8M | 17.1M | 86.3% |
+| Repo | Original size | Files | tar+gz size | marc size | % size of tar | previous |
+|------|---------------|-------|-------------------------|-----------|---------------|----------|
+| kubernetes | 376M | 29838 | 90.0M | 73.7M | 81.8% | 82.4% |
+| docker-compose | 4.5M | 702 | 1.2M | 1.1M | 93.7% | 94.4% |
+| vuejs | 9.9M | 728 | 3.3M | 3.2M | 96.4% | 96.9% |
+| numpy |  50M | 2364 | 18.9M | 17.5M | 92.6% | 92.7% |
+| redis |  29M | 1780 | 9.0M | 8.3M | 92.3% | 92.7% |
+| bootstrap |  28M | 816 | 14.9M | 13.5M | 90.5% | 90.3% |
+| express | 1.6M | 238 | 354.0K | 332.5K | 93.9% | 95.8% |
+| react |  65M | 6884 | 19.8M | 17.1M | 86.0% | 86.3% |
 
 > Against tar+gz, marc shines on large, Go-heavy or mixed-language repos.
 > Against tar+zstd, Metarc is now better on all repos.
@@ -179,7 +188,8 @@ Append `--mode log` to see progress output, or `--mode test` to verify round-tri
 ## Changelog
 
 2026-08-14: **Solid block geometry: window follows the block, 16 MiB → 32 MiB, small extensions pool.**
-The tables above predate this change and need a re-run.
+The size tables above were re-run for this change. The **time tables were not**:
+they need cold-cache mode, which needs `sudo` for the page-cache flush.
 
 Three changes (see ADR-017): the solid encoder's match window now defaults to the
 block size (it was stuck at klauspost's 8 MiB per-level default, so the second
