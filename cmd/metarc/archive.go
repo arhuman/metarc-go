@@ -59,6 +59,27 @@ func resolveZstdLevels(global, blob, solid, catalog, dict int) (store.ZstdConfig
 	return cfg, nil
 }
 
+// resolveZstdWindow parses the --zstd-window value into a byte count suitable
+// for zstd.WithWindowSize. An empty string means "unset": the solid encoder
+// then defaults its window to the solid block size, and the other encoders
+// keep the library default.
+func resolveZstdWindow(s string) (int, error) {
+	if strings.TrimSpace(s) == "" {
+		return 0, nil
+	}
+	n, err := parseByteSize(s)
+	if err != nil {
+		return 0, fmt.Errorf("--zstd-window: %w", err)
+	}
+	if n < zstd.MinWindowSize || n > zstd.MaxWindowSize {
+		return 0, fmt.Errorf("--zstd-window: must be between %d and %d bytes, got %d", zstd.MinWindowSize, zstd.MaxWindowSize, n)
+	}
+	if n&(n-1) != 0 {
+		return 0, fmt.Errorf("--zstd-window: must be a power of two, got %d", n)
+	}
+	return int(n), nil
+}
+
 // newArchiveCmd returns the `metarc archive` subcommand.
 //
 // Usage:
@@ -79,6 +100,7 @@ func newArchiveCmd() *cobra.Command {
 	var solidBlockSize string
 	var disableTransforms []string
 	var zstdLevel, zstdLevelBlob, zstdLevelSolid, zstdLevelCatalog, zstdLevelDict int
+	var zstdWindow string
 
 	cmd := &cobra.Command{
 		Use:   "archive <output.marc> <source-dir> [source-dir...]",
@@ -101,6 +123,9 @@ siblings under the destination. Two sources may not share the same basename.`,
 			keep := keepPlanLog || explain
 			zCfg, err := resolveZstdLevels(zstdLevel, zstdLevelBlob, zstdLevelSolid, zstdLevelCatalog, zstdLevelDict)
 			if err != nil {
+				return err
+			}
+			if zCfg.WindowSize, err = resolveZstdWindow(zstdWindow); err != nil {
 				return err
 			}
 			opts := runtime.ArchiveOpts{
@@ -149,6 +174,7 @@ siblings under the destination. Two sources may not share the same basename.`,
 	cmd.Flags().IntVar(&zstdLevelSolid, "zstd-level-solid", -1, "zstd encoder level for solid blocks (1..11); overrides --zstd-level")
 	cmd.Flags().IntVar(&zstdLevelCatalog, "zstd-level-catalog", -1, "zstd encoder level for the catalog chunk (1..11); overrides --zstd-level")
 	cmd.Flags().IntVar(&zstdLevelDict, "zstd-level-dict", -1, "zstd encoder level for dictionary build/encode (1..11); overrides --zstd-level")
+	cmd.Flags().StringVar(&zstdWindow, "zstd-window", "", "zstd match window, power of two (e.g. 32MB); default: the solid block size")
 
 	return cmd
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -101,6 +102,11 @@ func printZstdLevels(cmd *cobra.Command, r *store.Reader) {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("%s=%s", k.label, v))
+	}
+	if v, ok, err := r.QueryMeta("zstd_window"); err == nil && ok {
+		if n, convErr := strconv.ParseInt(v, 10, 64); convErr == nil {
+			parts = append(parts, "window="+formatBytes(n))
+		}
 	}
 	if len(parts) == 0 {
 		return

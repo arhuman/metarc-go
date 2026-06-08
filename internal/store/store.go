@@ -14,6 +14,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/arhuman/metarc-go/internal/plan"
 	"github.com/arhuman/metarc-go/pkg/marc"
@@ -192,7 +193,7 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 	// Record the resolved zstd levels in the meta table so readers/inspect
 	// can report how an archive was produced. Older archives without these
 	// keys remain readable; consumers must tolerate missing rows.
-	if err := writeZstdMeta(db, w.zstdCfg); err != nil {
+	if err := writeZstdMeta(db, w.zstdCfg, w.solidSize); err != nil {
 		_ = db.Close()
 		_ = outFile.Close()
 		_ = os.Remove(dbPath)
@@ -767,7 +768,7 @@ func (w *Writer) finalize() error {
 // zstd_level_dict. Values are the klauspost level names (fastest/default/
 // better/best) stored as TEXT. This is additive: legacy archives without
 // these keys must still inspect/extract cleanly.
-func writeZstdMeta(db *sql.DB, cfg ZstdConfig) error {
+func writeZstdMeta(db *sql.DB, cfg ZstdConfig, solidSize int64) error {
 	rows := []struct {
 		key   string
 		level zstd.EncoderLevel
@@ -783,6 +784,22 @@ func writeZstdMeta(db *sql.DB, cfg ZstdConfig) error {
 			r.key, r.level.String(),
 		); err != nil {
 			return fmt.Errorf("write %s: %w", r.key, err)
+		}
+	}
+
+	// Record the window actually in force, not the raw flag: an unset window
+	// resolves to the solid block size, and reproducing an archive requires
+	// the resolved value.
+	window := cfg.WindowSize
+	if window == 0 && solidSize > 0 {
+		window = solidWindowFor(solidSize)
+	}
+	if window > 0 {
+		if _, err := db.Exec(
+			`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`,
+			"zstd_window", strconv.Itoa(window),
+		); err != nil {
+			return fmt.Errorf("write zstd_window: %w", err)
 		}
 	}
 	return nil
