@@ -324,7 +324,9 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 		}
 	}
 
-	// Sort files by extension (stable: same-extension files keep scan order).
+	// Sort files by extension. Stability is load-bearing: the scan order it
+	// keeps holds same-directory files together, and re-sorting those on
+	// (basename, size) measured worse on every corpus (see .claude/CHANGELOG.md).
 	sort.SliceStable(files, func(i, j int) bool {
 		return filepath.Ext(files[i].Entry.RelPath) < filepath.Ext(files[j].Entry.RelPath)
 	})
