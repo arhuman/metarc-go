@@ -59,12 +59,19 @@ func TestQueryBlobSHAs(t *testing.T) {
 		t.Fatalf("expected 3 blob SHAs, got %d", len(shas))
 	}
 
-	// SHAs must be non-zero.
-	zero := [32]byte{}
+	// SHAs must be stored truncated, non-zero and distinct.
+	seen := make(map[string]bool, len(shas))
 	for i, sha := range shas {
-		if sha == zero {
+		if len(sha) != marc.StoredSHALen {
+			t.Errorf("blob SHA[%d] is %d bytes, want %d", i, len(sha), marc.StoredSHALen)
+		}
+		if bytes.Equal(sha, make([]byte, len(sha))) {
 			t.Errorf("blob SHA[%d] is all zeros", i)
 		}
+		if seen[string(sha)] {
+			t.Errorf("blob SHA[%d] duplicates an earlier blob", i)
+		}
+		seen[string(sha)] = true
 	}
 }
 

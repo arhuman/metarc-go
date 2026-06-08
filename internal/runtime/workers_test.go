@@ -90,7 +90,7 @@ func TestArchive_workers(t *testing.T) {
 }
 
 // collectBlobSHAs opens an archive and returns the set of blob SHA hashes.
-func collectBlobSHAs(t *testing.T, marcPath string) map[[32]byte]bool {
+func collectBlobSHAs(t *testing.T, marcPath string) map[string]bool {
 	t.Helper()
 	r, err := store.OpenReader(marcPath)
 	if err != nil {
@@ -98,13 +98,13 @@ func collectBlobSHAs(t *testing.T, marcPath string) map[[32]byte]bool {
 	}
 	defer func() { _ = r.Close() }()
 
-	shas := make(map[[32]byte]bool)
+	shas := make(map[string]bool)
 	rows, err := r.QueryBlobSHAs()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, sha := range rows {
-		shas[sha] = true
+		shas[string(sha)] = true
 	}
 	return shas
 }

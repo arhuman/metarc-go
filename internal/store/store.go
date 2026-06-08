@@ -708,6 +708,14 @@ func (w *Writer) finalize() error {
 		}
 	}
 
+	// Truncate the stored hashes. Dedup ran on full hashes above; what remains
+	// is the archive's record of blob identity, and hash bytes are the one part
+	// of the catalog zstd cannot compress. Must follow the index drop so the
+	// unique constraint is not re-checked against prefixes.
+	if _, err := w.db.Exec(`UPDATE blobs SET sha = substr(sha, 1, ?)`, marc.StoredSHALen); err != nil {
+		return fmt.Errorf("truncate blob hashes: %w", err)
+	}
+
 	// VACUUM INTO a clean copy to serialize the catalog.
 	tmpF, err := os.CreateTemp("", "marc-catalog-serial-*.db")
 	if err != nil {

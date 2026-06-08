@@ -121,6 +121,18 @@ type Entry struct {
 }
 
 // SchemaDDL is the SQLite schema applied when creating a new .marc archive.
+// StoredSHALen is the number of BLAKE3 bytes kept in blobs.sha once the
+// archive is finalized.
+//
+// Content addressing runs on the full 32-byte hash for the whole write path:
+// dedup, the transform result cache and the blob index all compare complete
+// hashes. Only the serialized catalog keeps a prefix, because hash bytes are
+// uniformly random and are therefore the one part of the catalog that zstd
+// cannot shrink at all. At 128 bits, the odds of two distinct blobs colliding
+// stay below 1e-26 for a million-blob archive, which is far under the odds of
+// the storage medium corrupting the file.
+const StoredSHALen = 16
+
 const SchemaDDL = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS names (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
@@ -141,7 +153,7 @@ CREATE TABLE IF NOT EXISTS entries (
 CREATE INDEX IF NOT EXISTS idx_entries_parent ON entries(parent_id);
 CREATE TABLE IF NOT EXISTS blobs (
     id           INTEGER PRIMARY KEY,
-    sha          BLOB NOT NULL,
+    sha          BLOB NOT NULL,   -- full BLAKE3-256 while writing, truncated to StoredSHALen at finalize
     source_sha   BLOB,
     offset       INTEGER NOT NULL,
     clen         INTEGER NOT NULL,

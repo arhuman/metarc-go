@@ -416,23 +416,24 @@ func (a *blobReaderAdapter) Open(id marc.BlobID) (io.ReadCloser, error) {
 	return a.r.OpenBlob(int64(id))
 }
 
-// QueryBlobSHAs returns all blob SHA hashes in the archive.
-func (r *Reader) QueryBlobSHAs() ([][32]byte, error) {
+// QueryBlobSHAs returns the content hash stored for every blob, in blob id
+// order. Archives written since marc.StoredSHALen was introduced hold a
+// truncated BLAKE3 prefix rather than the full 32-byte hash, so the values are
+// returned as raw bytes and callers must not assume a fixed width.
+func (r *Reader) QueryBlobSHAs() ([][]byte, error) {
 	rows, err := r.db.Query(`SELECT sha FROM blobs ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("store.QueryBlobSHAs: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var shas [][32]byte
+	var shas [][]byte
 	for rows.Next() {
 		var shaBytes []byte
 		if err := rows.Scan(&shaBytes); err != nil {
 			return nil, fmt.Errorf("store.QueryBlobSHAs: scan: %w", err)
 		}
-		var sha [32]byte
-		copy(sha[:], shaBytes)
-		shas = append(shas, sha)
+		shas = append(shas, shaBytes)
 	}
 	return shas, rows.Err()
 }
