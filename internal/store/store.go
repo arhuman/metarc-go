@@ -697,6 +697,14 @@ func (w *Writer) finalize() error {
 		return fmt.Errorf("drop source_sha: %w", err)
 	}
 
+	// Drop the sha index too. It exists to answer dedup lookups while writing;
+	// nothing reads blobs by hash afterwards. Keeping it would store a second
+	// copy of every 32-byte BLAKE3, and hash bytes are uniformly random, so
+	// zstd cannot compress them away.
+	if _, err := w.db.Exec(`DROP INDEX IF EXISTS idx_blobs_sha`); err != nil {
+		return fmt.Errorf("drop sha index: %w", err)
+	}
+
 	// VACUUM INTO a clean copy to serialize the catalog.
 	tmpF, err := os.CreateTemp("", "marc-catalog-serial-*.db")
 	if err != nil {
