@@ -9,11 +9,17 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+// DefaultMinSolidBlockSize is the size below which an extension change does
+// not flush the block in flight. It bounds the number of undersized zstd
+// frames a corpus with many rare extensions can produce.
+const DefaultMinSolidBlockSize = 1 << 20
+
 // solidAccumulator groups multiple raw blobs into single zstd frames (solid blocks)
 // to exploit cross-file redundancy before the compressor.
 type solidAccumulator struct {
 	w            *Writer
 	maxBlockSize int64
+	minBlockSize int64         // below this, an extension change does not flush
 	buf          []byte        // concatenated raw blob data
 	pending      []pendingBlob // blobs in current block
 	blockCounter int64         // incrementing block ID
@@ -23,12 +29,17 @@ type solidAccumulator struct {
 }
 
 // setExtension declares the extension of blobs that are about to be added.
-// If the new extension differs from the one in flight, the current block is
-// flushed first so that each block contains blobs of a single extension. The
-// archive pipeline already sorts files by extension; this rule prevents a
-// boundary file from straddling two languages and weakening zstd's context.
+// When the extension changes, the block in flight is flushed so that blocks
+// stay extension-pure and a boundary file does not straddle two languages.
+//
+// The flush is skipped while the block holds less than minBlockSize: a frame
+// that small carries its own zstd header and entropy tables and sees no
+// cross-file context, which costs more than the purity buys. Since the
+// pipeline feeds files in extension order, skipping the flush makes
+// consecutive rare extensions pool into one block on their own, with no
+// separate routing.
 func (sa *solidAccumulator) setExtension(ext string) error {
-	if sa.extInit && ext != sa.currentExt && len(sa.buf) > 0 {
+	if sa.extInit && ext != sa.currentExt && int64(len(sa.buf)) >= sa.minBlockSize {
 		if err := sa.flush(); err != nil {
 			return fmt.Errorf("solidAccumulator.setExtension: flush: %w", err)
 		}

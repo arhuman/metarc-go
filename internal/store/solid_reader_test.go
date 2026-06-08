@@ -126,34 +126,24 @@ func TestSolidBlock_roundtrip(t *testing.T) {
 	}
 }
 
-// TestSolidBlock_extensionFlushesBlock verifies that a change in file
-// extension flushes the current solid block, even when the cumulative size
-// is well under the configured block threshold.
-func TestSolidBlock_extensionFlushesBlock(t *testing.T) {
+// writeSolidArchive writes files into a solid archive and returns its block count.
+func writeSolidArchive(t *testing.T, name string, blockSize int64, files []struct {
+	name    string
+	content []byte
+},
+) int64 {
+	t.Helper()
 	tmp := t.TempDir()
 	srcDir := filepath.Join(tmp, "src")
 	if err := os.Mkdir(srcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Two files per extension; total bytes per ext are tiny vs the 1 MiB
-	// block size. Without ext-aware flushing all four files share one block.
-	files := []struct {
-		name    string
-		content []byte
-	}{
-		{"a1.go", bytes.Repeat([]byte("aa"), 32)},
-		{"a2.go", bytes.Repeat([]byte("ab"), 32)},
-		{"b1.txt", bytes.Repeat([]byte("ba"), 32)},
-		{"b2.txt", bytes.Repeat([]byte("bb"), 32)},
-	}
-
-	marcPath := filepath.Join(tmp, "ext_align.marc")
-	w, err := OpenWriter(marcPath, WithSolidBlockSize(1<<20))
+	marcPath := filepath.Join(tmp, name)
+	w, err := OpenWriter(marcPath, WithSolidBlockSize(blockSize))
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	ctx := context.Background()
 	for _, f := range files {
 		e := createTestFile(t, srcDir, f.name, f.content)
@@ -170,10 +160,44 @@ func TestSolidBlock_extensionFlushesBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
+	return r.QuerySolidBlockCount()
+}
 
-	count := r.QuerySolidBlockCount()
-	if count != 2 {
-		t.Fatalf("expected 2 solid blocks (one per extension), got %d", count)
+// TestSolidBlock_extensionFlushesBlock verifies that a change in file
+// extension flushes the current solid block once the block carries at least
+// DefaultMinSolidBlockSize bytes, keeping large blocks extension-pure.
+func TestSolidBlock_extensionFlushesBlock(t *testing.T) {
+	// Each extension contributes more than the minimum, so the boundary
+	// flushes. Extensions no transform claims keep this about block formation.
+	big := DefaultMinSolidBlockSize + 1024
+	files := []struct {
+		name    string
+		content []byte
+	}{
+		{"a1.aaa", bytes.Repeat([]byte("alpha content\n"), big/14)},
+		{"b1.bbb", bytes.Repeat([]byte("beta content!!\n"), big/15)},
+	}
+	if got := writeSolidArchive(t, "ext_align.marc", 64<<20, files); got != 2 {
+		t.Fatalf("expected 2 solid blocks (one per extension), got %d", got)
+	}
+}
+
+// TestSolidBlock_smallExtensionsPool verifies the counterpart: extension
+// groups too small to be worth their own zstd frame accumulate into a shared
+// block instead of producing one undersized frame each.
+func TestSolidBlock_smallExtensionsPool(t *testing.T) {
+	var files []struct {
+		name    string
+		content []byte
+	}
+	for _, ext := range []string{"go", "txt", "md", "yaml", "json", "cfg", "ini", "toml"} {
+		files = append(files, struct {
+			name    string
+			content []byte
+		}{"f." + ext, bytes.Repeat([]byte(ext+" content\n"), 64)})
+	}
+	if got := writeSolidArchive(t, "ext_pool.marc", 1<<20, files); got != 1 {
+		t.Fatalf("expected 8 tiny extension groups to pool into 1 solid block, got %d", got)
 	}
 }
 

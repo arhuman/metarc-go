@@ -205,6 +205,7 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 		w.solidAcc = &solidAccumulator{
 			w:            w,
 			maxBlockSize: w.solidSize,
+			minBlockSize: min(int64(DefaultMinSolidBlockSize), w.solidSize),
 		}
 	}
 
