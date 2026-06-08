@@ -122,8 +122,9 @@ func (s *blobSink) writeData(data []byte, sha [32]byte) (marc.BlobID, error) {
 		return id, nil
 	}
 
-	// Route through solid accumulator when active.
-	if s.w.solidAcc != nil {
+	// Route through solid accumulator when active. A solid block exists only
+	// to share one zstd frame, so --final-compressor none must bypass it.
+	if s.w.solidAcc != nil && s.compress == "zstd" {
 		return s.w.solidAcc.addBlob(data, sha, s.sourceSHA)
 	}
 
