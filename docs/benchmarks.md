@@ -23,44 +23,53 @@ archived with `marc` vs `tar+zstd`, on the same machine.
 
 `./scripts/run_bench.sh --type size`
 
-_ marc: metarc version v0.10.0-11-ge24f0092-dirty (e24f0092, 2026-08-14T04:07:23Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar | previous |
 |------|---------------|-------|-------------------------|-----------|---------------|----------|
-| kubernetes | 376M | 29838 | 81.1M | 73.7M | 90.8% | 91.4% |
-| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 98.4% | 99.1% |
-| vuejs | 9.9M | 728 | 3.2M | 3.2M | 96.9% | 97.5% |
-| numpy |  50M | 2364 | 18.4M | 17.5M | 95.2% | 95.3% |
-| redis |  28M | 1780 | 8.9M | 8.3M | 93.4% | 93.7% |
-| bootstrap |  28M | 816 | 14.1M | 13.5M | 95.9% | 95.9% |
-| express | 1.6M | 238 | 345.5K | 332.5K | 96.2% | 98.2% |
-| react |  66M | 6884 | 18.4M | 17.1M | 92.7% | 92.4% |
+| kubernetes | 376M | 29838 | 81.0M | 72.6M | 89.6% | 91.4% |
+| docker-compose | 4.5M | 702 | 1.1M | 1.0M | 95.5% | 99.1% |
+| vuejs | 9.9M | 728 | 3.2M | 3.1M | 95.9% | 97.5% |
+| numpy |  49M | 2364 | 18.4M | 17.4M | 94.6% | 95.3% |
+| redis |  28M | 1780 | 8.9M | 8.2M | 92.5% | 93.7% |
+| bootstrap |  28M | 816 | 14.1M | 13.5M | 95.5% | 95.9% |
+| express | 1.6M | 238 | 345.6K | 319.7K | 92.5% | 98.2% |
+| react |  65M | 6884 | 18.4M | 16.8M | 91.1% | 92.4% |
 
-> The `previous` column is the 2026-05-05 run (v0.8.0-5), for the solid-block
-> geometry change of 2026-08-14. Read it with one caveat: the bench archives
-> each clone **including its `.git`**, and a shallow clone does not repack
-> identically between runs, so the tar baseline itself moved (bootstrap 13.9M
-> to 14.1M, react 18.5M to 18.4M). react is the clearest case: marc produced
-> 17.1M in both runs and only the denominator changed. On the same corpora with
-> `.git` removed, the change measured -2.61% (express), -2.43% (docker-compose),
-> -1.65% (kubernetes) and -0.79% (react) in absolute archive bytes.
+> The `previous` column is the 2026-05-05 run (v0.8.0-5). Every corpus improved,
+> after the solid-block geometry change and the catalog work of 2026-08-14.
+>
+> **These ratios understate the change, and they are not exactly reproducible.**
+> The bench archives each clone *including its `.git`*. On kubernetes that is
+> 48 MB of packfiles: 12% of the input bytes, but roughly 58% of the resulting
+> archive, because packs are already deflate-compressed and pass through both
+> tools untouched. Only 25 of the 29 838 files live in `.git`, so the file count
+> hides it. The same tree with `.git` removed archives to 29.4 MB rather than
+> 72.6 MB, and the measured gain there is about twice what this table shows:
+> express -10.7%, docker-compose -9.9%, kubernetes -5.2%, react -4.9% in
+> absolute archive bytes against the pre-2026-08-14 binary.
+>
+> The pinned commit fixes the tree but not the packfile: `git fetch --depth 1`
+> does not repack byte-identically between runs, so the tar baseline itself
+> drifts (bootstrap 13.9M to 14.1M, react 18.5M to 18.4M across two runs of the
+> same commit). Treat sub-0.5 pp differences in this table as noise.
 
 #### vs tar+gz
 
  `./scripts/run_bench.sh --type size --compression gz`
 
-_ marc: metarc version v0.10.0-11-ge24f0092-dirty (e24f0092, 2026-08-14T04:07:23Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+gz size | marc size | % size of tar | previous |
 |------|---------------|-------|-------------------------|-----------|---------------|----------|
-| kubernetes | 376M | 29838 | 90.0M | 73.7M | 81.8% | 82.4% |
-| docker-compose | 4.5M | 702 | 1.2M | 1.1M | 93.7% | 94.4% |
-| vuejs | 9.9M | 728 | 3.3M | 3.2M | 96.4% | 96.9% |
-| numpy |  50M | 2364 | 18.9M | 17.5M | 92.6% | 92.7% |
-| redis |  29M | 1780 | 9.0M | 8.3M | 92.3% | 92.7% |
-| bootstrap |  28M | 816 | 14.9M | 13.5M | 90.5% | 90.3% |
-| express | 1.6M | 238 | 354.0K | 332.5K | 93.9% | 95.8% |
-| react |  65M | 6884 | 19.8M | 17.1M | 86.0% | 86.3% |
+| kubernetes | 376M | 29838 | 90.0M | 72.6M | 80.6% | 82.4% |
+| docker-compose | 4.5M | 702 | 1.2M | 1.0M | 90.9% | 94.4% |
+| vuejs | 9.9M | 728 | 3.3M | 3.1M | 95.4% | 96.9% |
+| numpy |  50M | 2364 | 18.9M | 17.4M | 92.1% | 92.7% |
+| redis |  28M | 1780 | 9.0M | 8.2M | 91.4% | 92.7% |
+| bootstrap |  28M | 816 | 14.9M | 13.5M | 90.2% | 90.3% |
+| express | 1.6M | 238 | 354.0K | 319.7K | 90.3% | 95.8% |
+| react |  66M | 6884 | 19.8M | 16.8M | 84.5% | 86.3% |
 
 > Against tar+gz, marc shines on large, Go-heavy or mixed-language repos.
 > Against tar+zstd, Metarc is now better on all repos.
@@ -186,6 +195,16 @@ Append `--mode log` to see progress output, or `--mode test` to verify round-tri
 ---
 
 ## Changelog
+
+2026-08-14 (later): **Catalog diet.**
+Write-only indexes (`blobs.sha`, `names.name`, `entries.parent_id`) are dropped
+before the catalog is serialized, `entry_blobs` became `WITHOUT ROWID`,
+`blobs.sha` stores a 16-byte prefix, and the catalog is compressed at level 11.
+See ADR-018. The kubernetes catalog went from 2.2 MB (7.4% of the archive) to
+1.1 MB (4.0%); small corpora gain most because the catalog is a larger share of
+a small archive. With `.git` removed: express -10.7%, docker-compose -9.9%,
+kubernetes -5.2%, react -4.9%, loghub -0.4% against the pre-2026-08-14 binary.
+Both size tables above cover this and the geometry change below.
 
 2026-08-14: **Solid block geometry: window follows the block, 16 MiB → 32 MiB, small extensions pool.**
 The size tables above were re-run for this change. The **time tables were not**:
