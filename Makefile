@@ -8,6 +8,12 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
+# Quality gate (a ratchet: raise it over time, never lower it to green a build).
+# Set at the aggregate floor measured on 2026-08-14 (67.9%). The 10x standard's
+# canonical value is 80; the gap is concentrated in cmd/metarc (11.9%) and
+# cmd/analyze (untested), not in the library packages, which run 78% to 100%.
+COVER_MIN ?= 65
+
 ifeq ($(GOOS),windows)
 BINARY_NAME := marc.exe
 else
@@ -17,14 +23,14 @@ endif
 # ==================================================================================== #
 # PHONY DECLARATIONS (in alphabetical order)
 # ==================================================================================== #
-.PHONY: audit build build-linux clean confirm cover fulltest help install release run test tidy tools
+.PHONY: audit build build-linux ci clean confirm cover cover-html fulltest help install release run test tidy tools
 
 # ==================================================================================== #
 # STANDARD TARGETS (in alphabetical order)
 # ==================================================================================== #
 
-## audit: run quality control checks
-audit: tools
+## audit: run quality control checks (lint, vulnerabilities, coverage floor)
+audit: tools cover
 	@which golangci-lint > /dev/null || $(MAKE) tools
 	@which govulncheck > /dev/null || $(MAKE) tools
 	go mod verify
@@ -55,8 +61,12 @@ help:
 	@echo 'Usage:'
 	@sed -n 's/^##//p' ${MAKEFILE_LIST} | column -t -s ':' | sed -e 's/^/ /'
 
-## release: run the full release pipeline (test, build, audit)
-release: test build audit
+## ci: the quality gate (test, build, audit). What CI and the release script run.
+ci: test build audit
+
+## release: cut and publish a release (derive version, changelog, tag, push)
+release:
+	@./scripts/release.sh
 
 ## run: build and run the binary locally
 run: build
@@ -98,7 +108,13 @@ confirm:
 # PROJECT-SPECIFIC TARGETS
 # ==================================================================================== #
 
-## cover: generate test coverage report and open in browser (skips long tests)
+## cover: run tests with coverage and fail below COVER_MIN (skips long tests)
 cover:
-	go test -short -coverprofile=coverage.out ./...
+	go test -short -covermode=atomic -coverprofile=coverage.out ./...
+	@go tool cover -func=coverage.out | awk '/^total:/ {print "coverage: " $$3}'
+	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {print $$3}' | tr -d '%'); \
+	awk -v t="$$total" -v min="$(COVER_MIN)" 'BEGIN { if (t+0 < min+0) { printf "FAIL: coverage %.1f%% < %d%%\n", t, min; exit 1 } }'
+
+## cover-html: open the coverage report in a browser (run cover first)
+cover-html: cover
 	go tool cover -html=coverage.out
