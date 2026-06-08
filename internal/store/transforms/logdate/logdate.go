@@ -81,10 +81,17 @@ const (
 	fmtMacOS             uint8 = 4 // 2026-05-11 15:42:17.123456+0700
 	fmtRFC3339NanoOffset uint8 = 5 // 2026-05-11T08:42:17.795+02:00
 	fmtGINLog            uint8 = 6 // 2026-05-11 10:36:19
-	fmtSyslog            uint8 = 7 // Jun 14 15:16:01       (no year, no TZ)
-	fmtLog4j             uint8 = 8 // 2026-05-11 10:36:19,978  (comma ms)
-	fmtPython            uint8 = 9 // 2026-05-11 10:36:19.008  (dot ms, variable digits)
+	fmtSyslog            uint8 = 7 // Jun 14 15:16:01       (no year, no TZ; decode-only)
+	fmtLog4j             uint8 = 8 // 2026-05-11 10:36:19,978  (comma ms; decode-only)
+	fmtPython            uint8 = 9 // 2026-05-11 10:36:19.008  (dot ms, variable digits; decode-only)
 )
+
+// encodeDisabledFmts lists formats recognized by Reverse but never emitted by
+// Apply: the 2026-05 ablation (experiments/ablation) measured 5-22% per-file
+// archive inflation from these tokens (zstd back-references beat the 8-byte
+// unix_nanos tail on low-entropy timestamps) and the syslog day-padding
+// ambiguity broke lossless roundtrip. Decode support stays for old archives.
+var encodeDisabledFmts = map[uint8]bool{fmtSyslog: true, fmtLog4j: true, fmtPython: true}
 
 var logBasenames = map[string]bool{
 	"syslog": true, "messages": true, "kern.log": true,
@@ -203,7 +210,8 @@ type dateParams struct {
 // Apply reads the file, checks that >50% of non-empty lines carry timestamps of any
 // recognized format, then replaces each timestamp with a 13-byte token. Each token
 // is self-describing: its fmt byte encodes the quote style (bits 7-6) and format id
-// (bits 5-0), so mixed-format files are handled correctly.
+// (bits 5-0), so mixed-format files are handled correctly. Formats listed in
+// encodeDisabledFmts are matched but copied verbatim, never tokenized.
 //
 // Pattern matching uses a move-to-front ordered list initialized from sample
 // frequency: the most common pattern is tried first on each position, and the
@@ -224,12 +232,21 @@ func (l *LogDate) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.
 			}
 			sampleLines = append(sampleLines, line)
 			lb := []byte(line)
+			// Best match wins (earliest, then longest) so a decode-only format
+			// shields its prefix from a shorter enabled one (Log4j vs GINLog).
+			bestStart, bestEnd, bestIdx := -1, -1, -1
 			for _, patIdx := range sampleOrder {
-				if allPatterns[patIdx].Find(lb) != nil {
-					patCounts[patIdx]++
-					totalMatched++
-					break
+				loc := allPatterns[patIdx].FindIndex(lb)
+				if loc == nil {
+					continue
 				}
+				if bestStart < 0 || loc[0] < bestStart || (loc[0] == bestStart && loc[1] > bestEnd) {
+					bestStart, bestEnd, bestIdx = loc[0], loc[1], patIdx
+				}
+			}
+			if bestIdx >= 0 && !encodeDisabledFmts[allFmtBytes[bestIdx]&0x1F] {
+				patCounts[bestIdx]++
+				totalMatched++
 			}
 		}
 		if err == io.EOF {
@@ -291,6 +308,13 @@ func (l *LogDate) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.
 				if bestStart < 0 {
 					out.Write(data[pos:])
 					break
+				}
+
+				// Decode-only format: copy the matched text verbatim.
+				if encodeDisabledFmts[allFmtBytes[patternOrder[bestOrderIdx]]&0x1F] {
+					out.Write(data[pos : pos+bestEnd])
+					pos += bestEnd
+					continue
 				}
 
 				if bestOrderIdx > 0 {

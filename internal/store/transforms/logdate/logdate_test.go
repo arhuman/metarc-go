@@ -3,6 +3,8 @@ package logdate
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -292,45 +294,6 @@ func TestRoundTrip(t *testing.T) {
 				return strings.Join(lines, "\n") + "\n"
 			},
 		},
-		{
-			name: "Syslog",
-			build: func() string {
-				months := []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
-				var lines []string
-				for i := range 60 {
-					lines = append(lines, fmt.Sprintf("%s %2d 15:%02d:%02d sshd[1234]: login from 10.0.0.1", months[i%12], (i%28)+1, i%60, (i*7)%60))
-				}
-				return strings.Join(lines, "\n") + "\n"
-			},
-		},
-		{
-			name: "Log4j",
-			build: func() string {
-				var lines []string
-				for i := range 60 {
-					lines = append(lines, fmt.Sprintf("2026-05-11 10:%02d:%02d,%03d INFO main org.example.App: event %d", i%60, (i*7)%60, (i*17)%1000, i))
-				}
-				return strings.Join(lines, "\n") + "\n"
-			},
-		},
-		{
-			name: "Python",
-			build: func() string {
-				cases := []string{
-					"2026-05-11 10:36:19.008",
-					"2026-05-11 10:36:19.1",
-					"2026-05-11 10:36:19.123456",
-					"2026-05-11 10:36:19.000000000",
-				}
-				var lines []string
-				for i, ts := range cases {
-					for j := range 15 {
-						lines = append(lines, fmt.Sprintf("%s INFO event i=%d j=%d", ts, i, j))
-					}
-				}
-				return strings.Join(lines, "\n") + "\n"
-			},
-		},
 		// '/' date-separator variants
 		{
 			name: "RFC3339Nano/slash",
@@ -436,6 +399,117 @@ func TestRoundTrip_MultiLineWithNonTimestampLines(t *testing.T) {
 	got := roundTrip(t, content)
 	if got != content {
 		t.Fatalf("round-trip mismatch:\ngot:  %q\nwant: %q", got, content)
+	}
+}
+
+// Decode-only formats (syslog, log4j, python) must not be tokenized: a file
+// where they dominate is declined entirely (handled=false, raw fallthrough).
+func TestApply_DecodeOnlyFormatsNotEncoded(t *testing.T) {
+	builders := map[string]func() string{
+		"Syslog": func() string {
+			months := []string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+			var lines []string
+			for i := range 60 {
+				lines = append(lines, fmt.Sprintf("%s %2d 15:%02d:%02d sshd[1234]: login from 10.0.0.1", months[i%12], (i%28)+1, i%60, (i*7)%60))
+			}
+			return strings.Join(lines, "\n") + "\n"
+		},
+		"Log4j": func() string {
+			var lines []string
+			for i := range 60 {
+				lines = append(lines, fmt.Sprintf("2026-05-11 10:%02d:%02d,%03d INFO main org.example.App: event %d", i%60, (i*7)%60, (i*17)%1000, i))
+			}
+			return strings.Join(lines, "\n") + "\n"
+		},
+		"Python": func() string {
+			var lines []string
+			for i := range 60 {
+				lines = append(lines, fmt.Sprintf("2026-05-11 10:36:%02d.%06d INFO event %d", i%60, i*17, i))
+			}
+			return strings.Join(lines, "\n") + "\n"
+		},
+	}
+	for name, build := range builders {
+		t.Run(name, func(t *testing.T) {
+			_, handled, _ := runApply(t, build())
+			if handled {
+				t.Fatal("expected handled=false for a decode-only dominant format")
+			}
+		})
+	}
+}
+
+// A file gated in by enabled formats must still keep decode-only timestamps verbatim.
+func TestRoundTrip_MixedEnabledAndDecodeOnly(t *testing.T) {
+	const log4jTS = "2026-05-11 10:36:19,978"
+	var lines []string
+	for i := range 30 {
+		lines = append(lines, fmt.Sprintf("2026-05-11T08:42:%02dZ event %d", i%60, i))
+	}
+	for i := range 30 {
+		lines = append(lines, fmt.Sprintf("%s INFO main event %d", log4jTS, i))
+	}
+	content := strings.Join(lines, "\n") + "\n"
+	res, handled, sink := runApply(t, content)
+	if !handled {
+		t.Fatal("expected handled=true (enabled RFC3339 lines pass the gate)")
+	}
+	if !bytes.Contains(sink.blobs[res.BlobIDs[0]], []byte(log4jTS)) {
+		t.Fatal("decode-only log4j timestamp must stay verbatim in the blob")
+	}
+	blobs := &fakeBlobs{blobs: sink.blobs}
+	var buf bytes.Buffer
+	if err := New().Reverse(context.Background(), res, blobs, &buf); err != nil {
+		t.Fatalf("Reverse: %v", err)
+	}
+	if buf.String() != content {
+		t.Fatalf("round-trip mismatch:\ngot:  %q\nwant: %q", buf.String(), content)
+	}
+}
+
+// Archives written before the encode-side removal still contain syslog, log4j
+// and python tokens: Reverse must keep decoding them.
+func TestReverse_DecodeOnlyTokens(t *testing.T) {
+	token := func(fmtID, subsec uint8, ts time.Time) []byte {
+		nanos := uint64(ts.UnixNano())
+		if tokenSizeForFmt(fmtID) == 10 {
+			tok := make([]byte, 10)
+			tok[1] = fmtID
+			binary.BigEndian.PutUint64(tok[2:], nanos)
+			return tok
+		}
+		tok := make([]byte, 11)
+		tok[1] = fmtID
+		tok[2] = subsec
+		binary.BigEndian.PutUint64(tok[3:], nanos)
+		return tok
+	}
+	var blob bytes.Buffer
+	blob.WriteString("start ")
+	blob.Write(token(fmtSyslog, 0, time.Date(2026, time.June, 14, 15, 16, 1, 0, time.UTC)))
+	blob.WriteString(" mid ")
+	blob.Write(token(fmtLog4j, 3, time.Date(2026, time.May, 11, 10, 36, 19, 978_000_000, time.UTC)))
+	blob.WriteString(" then ")
+	blob.Write(token(fmtPython, 3, time.Date(2026, time.May, 11, 10, 36, 19, 8_000_000, time.UTC)))
+	blob.WriteString(" end\n")
+
+	sink := makeSink()
+	id, err := sink.Write(context.Background(), bytes.NewReader(blob.Bytes()))
+	if err != nil {
+		t.Fatalf("sink.Write: %v", err)
+	}
+	params, err := json.Marshal(dateParams{Fmt: 0})
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	res := marc.Result{BlobIDs: []marc.BlobID{id}, Params: params}
+	var buf bytes.Buffer
+	if err := New().Reverse(context.Background(), res, &fakeBlobs{blobs: sink.blobs}, &buf); err != nil {
+		t.Fatalf("Reverse: %v", err)
+	}
+	want := "start Jun 14 15:16:01 mid 2026-05-11 10:36:19,978 then 2026-05-11 10:36:19.008 end\n"
+	if buf.String() != want {
+		t.Fatalf("decode-only reverse mismatch:\ngot:  %q\nwant: %q", buf.String(), want)
 	}
 }
 
