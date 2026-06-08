@@ -25,6 +25,24 @@ archives:
 checksum:
   name_template: "checksums.txt"
 
+# syft (SBOM) and cosign (signing) must be on PATH, or the release fails with
+# "executable file not found". The installer steps live in .github/workflows/release.yml,
+# which also needs `id-token: write` for cosign's keyless OIDC flow.
+sboms:
+  - artifacts: archive
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+      - --yes
+    artifacts: checksum
+
 changelog:
   use: github
   filters:
