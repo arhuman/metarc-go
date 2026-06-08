@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Usage: ./run_bench.sh [--compression zstd|gz] [--type size|time|legacy] [--hot]
+# Usage: ./run_bench.sh [--compression zstd|gz] [--type size|time|legacy]
+#                       [--corpus full|tree] [--hot]
 #
 # All progress/debug output goes to stderr so that stdout contains
 # only the markdown table, enabling:  ./run_bench.sh >> RESULTS.md
+#
+# Corpus form:
+#
+#   full (default)  measure the clone as checked out, .git included. What a
+#                   user archiving a working directory actually gets, and the
+#                   form every historical table was measured in. The packfiles
+#                   are already compressed, so they pass through both tools
+#                   untouched and pull every ratio toward parity.
+#
+#   tree            measure the source tree alone, exported with `git archive`
+#                   at the pinned commit. Isolates the content class the tool
+#                   targets, and is the only reproducible form: `git archive`
+#                   stamps mtimes from the commit, a checkout stamps them
+#                   with "now".
+#
+# Report both. The pair is the measurement: `full` states what users see,
+# `tree` states what the compressor did, and the gap between them is the
+# weight of the already-compressed objects.
 #
 # Cache mode (affects --type time only; size is deterministic):
 #
@@ -44,11 +63,13 @@ COMPARE="$PLAYGROUND/compare_on_repo.sh"
 COMPRESSION="zstd"
 TYPE="legacy"
 HOT_FLAG=""
+CORPUS="full"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --compression) COMPRESSION="$2"; shift 2 ;;
         --type)        TYPE="$2"; shift 2 ;;
+        --corpus)      CORPUS="$2"; shift 2 ;;
         --hot)         HOT_FLAG="--hot"; shift ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
@@ -66,7 +87,7 @@ REPOS=(
     "https://github.com/facebook/react react 561ed529b3a6a16e5b2b76fa5ee86c09f959686c"
 )
 
-EXTRA_ARGS="--compression $COMPRESSION --type $TYPE $HOT_FLAG"
+EXTRA_ARGS="--compression $COMPRESSION --type $TYPE --corpus $CORPUS $HOT_FLAG"
 
 # Default cache mode is COLD. Prompt for sudo upfront so subsequent
 # flush_cache calls inherit a cached credential instead of failing

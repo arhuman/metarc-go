@@ -1,7 +1,60 @@
-# Metarc — Benchmarks
+# Metarc Benchmarks
 
 All benchmarks run against shallow clones of real-world open source repositories,
 archived with `marc` vs `tar+zstd`, on the same machine.
+
+## Two corpus forms, and why both are reported
+
+Every size table below exists twice, because a single number cannot answer both
+questions worth asking.
+
+**`--corpus full`: what a user gets.** The clone as checked out, `.git`
+included. This is what happens when someone archives a working directory, and
+it is the form every historical table in this file was measured in.
+
+**`--corpus tree`: what the compressor did.** The source tree alone, exported
+with `git archive` at the pinned commit.
+
+The gap between the two is not noise to be cleaned up. It is the weight of the
+already-compressed objects in the corpus, and it is large. On kubernetes, `.git`
+is 48 MB: only 12% of the input bytes and 25 of the 29 838 files, but roughly
+**58% of the resulting archive**, because packfiles are already deflate-compressed
+and pass through both tools untouched. A ratio measured over the full clone is
+therefore a weighted average of two very different regimes, dominated by the one
+where neither tool can do anything. It answers "how much of my disk does this
+save" honestly, and answers "is this compressor good" barely at all.
+
+The reason to report both rather than pick one is that dropping `.git` would
+also drop the only incompressible content in the whole suite. All eight corpora
+are source code; `.git` is, by accident, the sole adversarial case present.
+Deleting it would make every corpus flattering, and would hide a real defect it
+currently exposes: `.pack` and `.idx` are not in the `passthrough/v1` allowlist,
+so metarc spends level-11 CPU recompressing data that cannot compress. The
+confound is worth classifying, not deleting.
+
+### Reproducibility
+
+`--corpus tree` is the only form that reproduces exactly. Two reasons, both
+verified:
+
+- **The pin fixes the tree, not the packfile.** `git fetch --depth 1` does not
+  produce byte-identical packs across runs of the same pinned commit, so the
+  corpus drifts. Observed on two runs of the same commit: the tar baseline moved
+  from 13.9M to 14.1M on bootstrap and from 345.6K to 329.8K on express, while
+  marc's output stayed put. Roughly 22 KB of that is `.git/index` alone, which
+  stores per-file inode, device and nanosecond-mtime data and is different for
+  every clone.
+- **`git archive` stamps mtimes from the commit,** so repeated exports are
+  byte-identical down to the timestamps. A checkout stamps them with "now",
+  which changes marc's catalog (it records `mtime_ns` per entry) even when the
+  content is identical.
+
+Clones are now cached in `/tmp/<name>` and reused whenever they already contain
+the pinned commit, which makes `--corpus full` reproducible too and removes the
+re-download from every run. `rm -rf /tmp/<name>` forces a refetch.
+
+> Read sub-0.5 pp differences between historical `full` tables as noise: those
+> predate the cache and therefore predate reproducibility.
 
 > **Cold-cache timing requires sudo**
 >
@@ -19,7 +72,7 @@ archived with `marc` vs `tar+zstd`, on the same machine.
 
 ### Size
 
-#### vs tar+zstd
+#### vs tar+zstd, full clone (.git included)
 
 `./scripts/run_bench.sh --type size`
 
@@ -54,7 +107,40 @@ _ marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13
 > drifts (bootstrap 13.9M to 14.1M, react 18.5M to 18.4M across two runs of the
 > same commit). Treat sub-0.5 pp differences in this table as noise.
 
-#### vs tar+gz
+#### vs tar+zstd, source tree only
+
+`./scripts/run_bench.sh --type size --corpus tree`
+
+_ marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ corpus: source tree only, exported with `git archive` at the pinned commit (no .git) _
+
+| Repo | Original size | Files | tar+zstd size | marc size | % size of tar | full clone | masked by .git |
+|------|---------------|-------|-------------------------|-----------|---------------|------------|----------------|
+| kubernetes | 327M | 29813 | 34.6M | 28.0M | **81.1%** | 89.6% | 8.5 pp |
+| react |  54M | 6859 | 8.2M | 6.8M | **83.3%** | 91.1% | 7.8 pp |
+| redis |  23M | 1755 | 4.2M | 3.6M | **86.1%** | 92.5% | 6.4 pp |
+| numpy |  40M | 2339 | 8.9M | 8.0M | **89.7%** | 94.6% | 4.9 pp |
+| express | 1.3M | 213 | 135.8K | 123.1K | **90.6%** | 92.5% | 1.9 pp |
+| docker-compose | 3.7M | 677 | 421.8K | 387.8K | **91.9%** | 95.5% | 3.6 pp |
+| vuejs | 7.6M | 703 | 1.5M | 1.4M | **94.3%** | 95.9% | 1.6 pp |
+| bootstrap |  20M | 791 | 6.6M | 6.3M | **95.8%** | 95.5% | -0.3 pp |
+
+> Rows sorted by advantage. The last column is the point of reporting both
+> forms: on the content metarc is built for, it wins by 4 to 19 percent, and the
+> full-clone table understates that by up to 8.5 points because it averages in
+> packfiles no compressor can touch.
+>
+> **bootstrap is the exception that confirms the reading.** It is the one corpus
+> whose ratio gets slightly *worse* without `.git`, because its source tree is
+> itself full of incompressible content (fonts, images, minified dist bundles).
+> Removing the packfiles does not remove the incompressible fraction there, so
+> nothing is unmasked. Corpora rank by how much compressible text they actually
+> contain, which is the honest ordering.
+>
+> vuejs is the weakest genuine result (94.3%): a small, homogeneous TypeScript
+> tree where zstd's own window already reaches everything metarc groups.
+
+#### vs tar+gz, full clone (.git included)
 
  `./scripts/run_bench.sh --type size --compression gz`
 
@@ -71,8 +157,31 @@ _ marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13
 | express | 1.6M | 238 | 354.0K | 319.7K | 90.3% | 95.8% |
 | react |  66M | 6884 | 19.8M | 16.8M | 84.5% | 86.3% |
 
+#### vs tar+gz, source tree only
+
+`./scripts/run_bench.sh --type size --corpus tree --compression gz`
+
+_ marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ corpus: source tree only, exported with `git archive` at the pinned commit (no .git) _
+
+| Repo | Original size | Files | tar+gz size | marc size | % size of tar | full clone |
+|------|---------------|-------|-------------------------|-----------|---------------|------------|
+| kubernetes | 327M | 29813 | 42.2M | 28.0M | **66.4%** | 80.6% |
+| react |  54M | 6859 | 9.2M | 6.8M | **74.0%** | 84.5% |
+| bootstrap |  20M | 791 | 7.7M | 6.3M | **82.1%** | 90.2% |
+| redis |  23M | 1755 | 4.2M | 3.6M | **85.5%** | 91.4% |
+| numpy |  40M | 2339 | 9.2M | 8.0M | **86.5%** | 92.1% |
+| docker-compose | 3.7M | 677 | 439.2K | 387.8K | **88.3%** | 90.9% |
+| express | 1.3M | 213 | 131.1K | 123.1K | **93.9%** | 90.3% |
+| vuejs | 7.6M | 703 | 1.5M | 1.4M | **95.9%** | 95.4% |
+
 > Against tar+gz, marc shines on large, Go-heavy or mixed-language repos.
 > Against tar+zstd, Metarc is now better on all repos.
+>
+> The two forms disagree in direction on express and vuejs here, by under
+> 4 points on archives of a few hundred KB. That is what the reproducibility
+> section warns about: gz has no dictionary to lose, so the small corpora are
+> dominated by framing and catalog overhead rather than by the corpus form.
 
 ### Time
 
@@ -153,6 +262,7 @@ Outputs all columns combined (default if `--type` is omitted).
 |------|--------|---------|-------------|
 | `--type` | `size`, `time`, `legacy` | `legacy` | Selects output columns |
 | `--compression` | `zstd`, `gz` | `zstd` | Final compressor for tar baseline |
+| `--corpus` | `full`, `tree` | `full` | `full` archives the clone with its `.git` (what a user gets); `tree` archives a `git archive` export of the pinned commit (what the compressor did, and the only reproducible form). See the section at the top of this file. |
 | `--hot` | (flag) | off (cold by default) | Use warm-cache methodology: prime the page cache before each timed run + 1 warmup. See *Choosing cold vs hot* below. |
 
 ### Choosing cold vs hot
@@ -195,6 +305,14 @@ Append `--mode log` to see progress output, or `--mode test` to verify round-tri
 ---
 
 ## Changelog
+
+2026-08-14 (later still): **Two corpus forms, cached clones, `git archive` export.**
+`--corpus tree` measures a `git archive` export of the pinned commit instead of
+the clone. Clones are now cached in `/tmp/<name>` and reused when they already
+hold the pinned commit, so re-runs cost no network and both forms reproduce
+byte-for-byte. Rationale and the full-vs-tree gap are documented at the top of
+this file. The `.git`-inclusive tables are kept, not replaced: they are the
+user-facing number, and `.git` is the only incompressible content in the suite.
 
 2026-08-14 (later): **Catalog diet.**
 Write-only indexes (`blobs.sha`, `names.name`, `entries.parent_id`) are dropped

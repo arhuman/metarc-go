@@ -21,6 +21,25 @@ set -euo pipefail
 #   --type size         size/ratio columns only
 #   --type time         timing columns only
 #
+# Corpus form (what gets measured):
+#   --corpus full       the clone as checked out, .git included (default).
+#                       This is the "reality" number: it is what a user gets
+#                       archiving a working directory, and it is the form every
+#                       historical table in docs/benchmarks.md was measured in.
+#                       Its packfiles are already deflate-compressed, so they
+#                       pass through both tools untouched and dilute the ratio.
+#   --corpus tree       the source tree alone, exported with `git archive` at
+#                       the pinned commit. Answers the content-type question:
+#                       how do the tools compare on compressible text, with the
+#                       already-compressed objects removed rather than averaged
+#                       in? Also the only fully reproducible form: `git archive`
+#                       stamps every file with the commit date, so repeated
+#                       exports are byte-identical, mtimes included. A checkout
+#                       stamps them with "now", which changes marc's catalog.
+#
+# The clone is cached in /tmp/<name> and reused when it already contains the
+# pinned commit; `rm -rf /tmp/<name>` forces a refetch.
+#
 # Cache mode (affects --type time only):
 #   (default)    COLD: flush the page cache (purge / drop_caches) before
 #                each timed run. No warmup. Reflects realistic I/O-bound
@@ -57,6 +76,7 @@ COMPRESSION="zstd"
 TYPE="legacy"
 COMMIT=""
 MARC_EXTRA_ARGS=""
+CORPUS="full"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -66,11 +86,17 @@ while [[ $# -gt 0 ]]; do
         --compression) COMPRESSION="$2"; shift 2 ;;
         --type)        TYPE="$2"; shift 2 ;;
         --commit)      COMMIT="$2"; shift 2 ;;
+        --corpus)      CORPUS="$2"; shift 2 ;;
         --hot)         export BENCH_HOT=1; shift ;;
         --marc-args)   MARC_EXTRA_ARGS="$2"; shift 2 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
     esac
 done
+
+if [[ "$CORPUS" != "full" && "$CORPUS" != "tree" ]]; then
+    echo "--corpus must be 'full' or 'tree', got '$CORPUS'" >&2
+    exit 1
+fi
 
 if [[ -z "$NAME" || -z "$REPO" ]]; then
     echo "Usage: $0 --name <name> --repo <repourl> [--commit <sha>] [--mode log|test] [--compression zstd|gz] [--type size|time|legacy] [--hot] [--marc-args \"...\"]" >&2
@@ -103,6 +129,11 @@ if [[ "$NAME" == "header" && "$REPO" == "header" ]]; then
     MARC_VERSION=$("$MARC" --version 2>&1 || echo "unknown")
     TAR_VERSION=$(tar --version 2>/dev/null | head -1 || echo "unknown")
     echo "_ marc: ${MARC_VERSION} | tar: ${TAR_VERSION}_"
+    if [[ "$CORPUS" == "tree" ]]; then
+        echo "_ corpus: source tree only, exported with \`git archive\` at the pinned commit (no .git) _"
+    else
+        echo "_ corpus: clone as checked out, .git included _"
+    fi
     if [[ "$TYPE" == "time" || "$TYPE" == "legacy" ]]; then
         OS_VER=$(sw_vers -productVersion 2>/dev/null || uname -sr)
         CPU=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || uname -m)
@@ -139,36 +170,71 @@ fi
 # --- work in /tmp ---
 
 WORKDIR="/tmp"
-DIR="$WORKDIR/$NAME"
+CLONE="$WORKDIR/$NAME"          # cached clone: working tree + .git
 DIR2="$WORKDIR/${NAME}2"
 TAR_EXTRACT_DIR="$WORKDIR/${NAME}_tar_extract"
 MARC_FILE="$WORKDIR/${NAME}.marc"
 
+# The measured directory. In full mode it is the clone itself; in tree mode it
+# is a clean export beside it, so the clone survives as a cache.
+if [[ "$CORPUS" == "tree" ]]; then
+    MEASURED="${NAME}_tree"
+else
+    MEASURED="$NAME"
+fi
+DIR="$WORKDIR/$MEASURED"
+
 if [[ "$COMPRESSION" == "zstd" ]]; then
     TAR_FILE="$WORKDIR/${NAME}.tar.zst"
-    tar_cmd()         { tar --zstd -cf "$TAR_FILE" -C "$WORKDIR" "$NAME" 2>/dev/null; }
+    tar_cmd()         { tar --zstd -cf "$TAR_FILE" -C "$WORKDIR" "$MEASURED" 2>/dev/null; }
     tar_extract_cmd() { tar --zstd -xf "$TAR_FILE" -C "$TAR_EXTRACT_DIR" 2>/dev/null; }
 else
     TAR_FILE="$WORKDIR/${NAME}.tgz"
-    tar_cmd()         { tar czf "$TAR_FILE" -C "$WORKDIR" "$NAME" 2>/dev/null; }
+    tar_cmd()         { tar czf "$TAR_FILE" -C "$WORKDIR" "$MEASURED" 2>/dev/null; }
     tar_extract_cmd() { tar xzf "$TAR_FILE" -C "$TAR_EXTRACT_DIR" 2>/dev/null; }
 fi
 marc_archive_cmd() { "$MARC" archive $MARC_EXTRA_ARGS "$MARC_FILE" "$DIR" 2>/dev/null; }
 marc_extract_cmd() { "$MARC" extract "$MARC_FILE" -C "$DIR2" 2>/dev/null; }
 
-# cleanup from previous run
-rm -rf "$DIR" "$DIR2" "$TAR_EXTRACT_DIR" "$TAR_FILE" "$MARC_FILE"
+# cleanup from previous run (never the cached clone)
+rm -rf "$DIR2" "$TAR_EXTRACT_DIR" "$TAR_FILE" "$MARC_FILE"
+[[ "$CORPUS" == "tree" ]] && rm -rf "$DIR"
 
-# 1. Clone at pinned commit (or shallow HEAD if no commit specified)
+# 1. Clone at pinned commit (or shallow HEAD if no commit specified).
+# Reuse the clone when it already holds the pinned commit: a depth-1 fetch
+# costs minutes on a large repo and does not repack identically twice.
 log "=== $NAME ==="
-log "  cloning..."
-if [[ -n "$COMMIT" ]]; then
-    git init "$DIR" >/dev/null 2>&1
-    git -C "$DIR" remote add origin "$REPO" 2>/dev/null
-    git -C "$DIR" fetch --depth 1 origin "$COMMIT" 2>/dev/null
-    git -C "$DIR" checkout FETCH_HEAD 2>/dev/null
+have_commit() {
+    [[ -d "$CLONE/.git" ]] || return 1
+    [[ -z "$COMMIT" ]] && return 0
+    git -C "$CLONE" rev-parse -q --verify "${COMMIT}^{commit}" >/dev/null 2>&1
+}
+if have_commit; then
+    log "  using cached clone"
 else
-    git clone --depth 1 "$REPO" "$DIR" 2>/dev/null
+    log "  cloning..."
+    rm -rf "$CLONE"
+    if [[ -n "$COMMIT" ]]; then
+        git init "$CLONE" >/dev/null 2>&1
+        git -C "$CLONE" remote add origin "$REPO" 2>/dev/null
+        git -C "$CLONE" fetch --depth 1 origin "$COMMIT" 2>/dev/null
+        git -C "$CLONE" checkout FETCH_HEAD 2>/dev/null
+    else
+        git clone --depth 1 "$REPO" "$CLONE" 2>/dev/null
+    fi
+fi
+
+# 1b. In tree mode, export the pinned tree into a clean directory. git archive
+# stamps every entry with the commit date, so the export is byte-identical on
+# every run, mtimes included — which a checkout is not, and which marc records
+# per entry in its catalog.
+if [[ "$CORPUS" == "tree" ]]; then
+    log "  exporting source tree..."
+    mkdir -p "$DIR"
+    if ! git -C "$CLONE" archive "${COMMIT:-HEAD}" | tar -x -C "$DIR"; then
+        echo "[compare_on_repo] git archive failed for $NAME" >&2
+        exit 1
+    fi
 fi
 
 # 2. Size + file count
@@ -206,8 +272,10 @@ fi
 # 6. Ratio
 RATIO=$(python3 -c "print(f'{$MARC_BYTES/$TAR_BYTES*100:.1f}%')")
 
-# 7. Cleanup
-rm -rf "$DIR" "$DIR2" "$TAR_EXTRACT_DIR" "$TAR_FILE" "$MARC_FILE"
+# 7. Cleanup. The clone stays: it is the cache. In tree mode the export is
+# regenerated from it in seconds, so it goes.
+rm -rf "$DIR2" "$TAR_EXTRACT_DIR" "$TAR_FILE" "$MARC_FILE"
+[[ "$CORPUS" == "tree" ]] && rm -rf "$DIR"
 
 # 8. Output based on mode and type
 case "$MODE" in
