@@ -123,7 +123,8 @@ type Entry struct {
 // SchemaDDL is the SQLite schema applied when creating a new .marc archive.
 const SchemaDDL = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-CREATE TABLE IF NOT EXISTS names (id INTEGER PRIMARY KEY, name TEXT UNIQUE);
+CREATE TABLE IF NOT EXISTS names (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_names_name ON names(name);
 CREATE TABLE IF NOT EXISTS entries (
     id        INTEGER PRIMARY KEY,
     parent_id INTEGER REFERENCES entries(id),
@@ -156,7 +157,7 @@ CREATE TABLE IF NOT EXISTS entry_blobs (
     seq      INTEGER,
     blob_id  INTEGER REFERENCES blobs(id),
     PRIMARY KEY (entry_id, seq)
-);
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS plan_log (
     entry_id        INTEGER REFERENCES entries(id),
     transform_id    TEXT,

@@ -697,12 +697,15 @@ func (w *Writer) finalize() error {
 		return fmt.Errorf("drop source_sha: %w", err)
 	}
 
-	// Drop the sha index too. It exists to answer dedup lookups while writing;
-	// nothing reads blobs by hash afterwards. Keeping it would store a second
-	// copy of every 32-byte BLAKE3, and hash bytes are uniformly random, so
-	// zstd cannot compress them away.
-	if _, err := w.db.Exec(`DROP INDEX IF EXISTS idx_blobs_sha`); err != nil {
-		return fmt.Errorf("drop sha index: %w", err)
+	// Drop the write-only indexes. Each answers a lookup the writer needs
+	// (dedup by hash, name interning, parent resolution) and that no reader
+	// performs: extraction joins names by id and walks entries by id. The sha
+	// one matters most, since hash bytes are uniformly random and zstd cannot
+	// compress them away.
+	for _, idx := range []string{"idx_blobs_sha", "idx_names_name", "idx_entries_parent"} {
+		if _, err := w.db.Exec(`DROP INDEX IF EXISTS ` + idx); err != nil {
+			return fmt.Errorf("drop %s: %w", idx, err)
+		}
 	}
 
 	// VACUUM INTO a clean copy to serialize the catalog.
