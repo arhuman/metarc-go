@@ -629,6 +629,9 @@ func (w *Writer) Close() error {
 			errs = append(errs, fmt.Errorf("solid flush: %w", err))
 		}
 	}
+	if w.solidAcc != nil {
+		w.solidAcc.close()
+	}
 
 	if w.tx != nil {
 		if err := w.tx.Commit(); err != nil {

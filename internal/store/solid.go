@@ -19,6 +19,7 @@ type solidAccumulator struct {
 	blockCounter int64         // incrementing block ID
 	currentExt   string        // file extension shared by blobs in the current block
 	extInit      bool          // currentExt has been set at least once
+	enc          *zstd.Encoder // built on first flush, reused for every block
 }
 
 // setExtension declares the extension of blobs that are about to be added.
@@ -120,20 +121,24 @@ func (sa *solidAccumulator) flush() error {
 	}
 
 	// Compress the entire concatenated buffer as one zstd frame at the
-	// writer-configured solid-block level.
-	encOpts := []zstd.EOption{
-		zstd.WithEncoderLevel(sa.w.zstdCfg.Solid),
-		zstd.WithEncoderConcurrency(1),
+	// writer-configured solid-block level. The encoder is built once and
+	// reused: at level 11 its match tables are sized from the window, so
+	// rebuilding one per block would dominate the cost of flushing.
+	if sa.enc == nil {
+		encOpts := []zstd.EOption{
+			zstd.WithEncoderLevel(sa.w.zstdCfg.Solid),
+			zstd.WithEncoderConcurrency(1),
+		}
+		if sa.w.zstdCfg.WindowSize > 0 {
+			encOpts = append(encOpts, zstd.WithWindowSize(sa.w.zstdCfg.WindowSize))
+		}
+		enc, err := zstd.NewWriter(nil, encOpts...)
+		if err != nil {
+			return fmt.Errorf("solidAccumulator.flush: create encoder: %w", err)
+		}
+		sa.enc = enc
 	}
-	if sa.w.zstdCfg.WindowSize > 0 {
-		encOpts = append(encOpts, zstd.WithWindowSize(sa.w.zstdCfg.WindowSize))
-	}
-	enc, err := zstd.NewWriter(nil, encOpts...)
-	if err != nil {
-		return fmt.Errorf("solidAccumulator.flush: create encoder: %w", err)
-	}
-	compressed := enc.EncodeAll(sa.buf, nil)
-	_ = enc.Close()
+	compressed := sa.enc.EncodeAll(sa.buf, nil)
 
 	// Record the chunk header offset.
 	chunkOffset := sa.w.blobOff
@@ -172,4 +177,13 @@ func (sa *solidAccumulator) flush() error {
 	sa.pending = sa.pending[:0]
 
 	return nil
+}
+
+// close releases the cached encoder. Safe to call on an accumulator that
+// never flushed.
+func (sa *solidAccumulator) close() {
+	if sa.enc != nil {
+		_ = sa.enc.Close()
+		sa.enc = nil
+	}
 }
