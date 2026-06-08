@@ -116,6 +116,11 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 	for _, id := range aopts.DisabledTransforms {
 		plan.Disabled[id] = true
 	}
+	// Dedup is structural: blobs.sha is UNIQUE, so duplicate content cannot be
+	// stored twice. Fail loudly instead of silently ignoring the flag.
+	if plan.Disabled["dedup/v1"] {
+		return fmt.Errorf("runtime.Archive: transform dedup/v1 cannot be disabled: the blob store is content-addressed")
+	}
 
 	numWorkers := runtime.NumCPU()
 	if aopts.Workers > 0 {
