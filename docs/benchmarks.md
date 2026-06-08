@@ -178,6 +178,32 @@ Append `--mode log` to see progress output, or `--mode test` to verify round-tri
 
 ## Changelog
 
+2026-08-14: **Solid block geometry: window follows the block, 16 MiB → 32 MiB, small extensions pool.**
+The tables above predate this change and need a re-run.
+
+Three changes (see ADR-017): the solid encoder's match window now defaults to the
+block size (it was stuck at klauspost's 8 MiB per-level default, so the second
+half of every 16 MiB block was unreachable); an extension change no longer
+flushes a block holding less than 1 MiB, so rare extensions pool instead of each
+paying for an undersized frame; and the default block size moves to 32 MiB.
+
+Measured on corpora with `.git` removed, since git pack files are incompressible
+and dilute every percentage. Deltas are against the previous default:
+
+| corpus | delta |
+|---|---|
+| express | -2.61% |
+| docker-compose | -2.43% |
+| react | -0.79% |
+| kubernetes | -1.65% |
+| loghub | +0.003% |
+
+The express and docker-compose figures recover the regression the 16 MiB bump
+introduced below. Peak RSS on kubernetes rises to ~361 MiB archiving and
+~349 MiB extracting (from 258/270 MiB). 64 MiB blocks were measured too
+(-2.58% on kubernetes, no gain elsewhere, +148 MiB RSS) and are available via
+`--solid-block-size`.
+
 2026-05-03 (Item 3): **Solid blocks: 4 MiB → 16 MiB, with extension-aligned flush.**
 The default solid block size moves from 4 MiB to 16 MiB and the accumulator now
 flushes on every file-extension change (the archive pipeline already sorts by

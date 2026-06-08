@@ -17,7 +17,7 @@ func init() {
 	//
 	// jsline (js-line-subst/v1) is intentionally NOT registered: its static
 	// hand-curated dictionary measured ~no gain on the JS/TS loss corpora
-	// (zstd's window already exploits these short patterns inside a 16 MiB
+	// (zstd's window already exploits these short patterns inside a solid
 	// solid block, and JS/TS source has high format/quote-style variance
 	// that breaks line-level lookup). The package is kept in the tree so it
 	// can be re-registered once a frequency-counted js_token.txt is built

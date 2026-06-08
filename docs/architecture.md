@@ -439,7 +439,7 @@ The two axes are orthogonal and compose independently: any combination of active
 
 ### Solid blocks
 
-Multiple blobs are concatenated into a single zstd frame (default threshold: 16 MiB). The accumulator also flushes on any file-extension change, so each block is extension-pure and zstd's window sees a single language at a time. The compressor exploits cross-file repetition (shared import headers, license preambles, YAML keys) that it would miss when compressing each blob independently. Decompressing one blob within a block requires decompressing the full block; an LRU cache (max 4 blocks) amortises this cost for sequential extraction.
+Multiple blobs are concatenated into a single zstd frame (default threshold: 32 MiB, which also sets the encoder's match window). The accumulator flushes on a file-extension change once the block holds at least 1 MiB, so large blocks stay extension-pure and zstd's window sees a single language at a time, while extension groups too small to fill their own frame pool together. The compressor exploits cross-file repetition (shared import headers, license preambles, YAML keys) that it would miss when compressing each blob independently. Decompressing one blob within a block requires decompressing the full block; an LRU cache (max 4 blocks) amortises this cost for sequential extraction.
 
 Solid compression is a pure storage decision: it is not recorded in `entries.transform` and requires no reader-side logic beyond locating the block offset.
 

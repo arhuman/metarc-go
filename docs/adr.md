@@ -107,7 +107,7 @@ The catalog is an ordinary SQLite database during writes (WAL mode, performance 
 The spec listed `small-text-pack` as an MVP priority: group small similar files together to improve the compression window. The implementation chose a more general approach.
 
 ### Decision
-`solidAccumulator` concatenates consecutive blobs into a single zstd frame (default threshold: 16 MiB, raised from 4 MiB on 2026-05-03). The accumulator also flushes on any file-extension change so each block is extension-pure. All blobs are eligible, not just small ones. Enabled by default, can be disabled with `--no-solid`.
+`solidAccumulator` concatenates consecutive blobs into a single zstd frame (default threshold: 32 MiB, raised from 4 MiB on 2026-05-03 and from 16 MiB on 2026-08-14; see ADR-017). The accumulator also flushes on a file-extension change once the block holds at least 1 MiB, so large blocks stay extension-pure while rare extensions pool together. All blobs are eligible, not just small ones. Enabled by default, can be disabled with `--no-solid`.
 
 ### Consequences
 - (+) Exploits cross-file redundancy (common import headers, YAML keys, license preambles) without any format knowledge
@@ -312,3 +312,48 @@ Simplified schema oriented around direct archiving:
 - (+) `plan_log` adds decision traceability that was absent from the spec
 - (-) No `analysis_*` tables: format-specific analysis (JSON, license) is inline in the transforms, not stored separately
 - Source of truth: `pkg/marc/format.go:SchemaDDL`
+
+---
+
+## ADR-017: Solid block geometry, the encoder window follows the block
+
+**Status**: Accepted
+**Date**: 2026-08-14
+
+### Context
+
+The 2026-05 ablation study (`experiments/ablation/`) established that solid blocks carry essentially all of metarc's gain over tar+zstd, while content transforms contribute nothing measurable on source corpora. That makes block geometry, not new transforms, the lever worth pulling.
+
+Reading the encoder setup exposed a defect in the geometry itself. `ZstdConfig.WindowSize` was plumbed to all three encoders but never populated, so klauspost applied its per-level default of 8 MiB (identical for levels 3, 7 and 11). Blocks were 16 MiB. The tail of every full block could not reference its head: half of the 4 MiB to 16 MiB bump shipped in Item 3 was unreachable by the matcher.
+
+A second defect affected small corpora. The accumulator flushed on every file-extension change regardless of size, so a corpus with many rare extensions produced dozens of undersized frames, each paying its own header and entropy tables while seeing no cross-file context. This is the mechanism behind the express (+2.0 pp) and docker-compose (+2.6 pp) regressions recorded in `docs/benchmarks.md` when blocks grew to 16 MiB.
+
+### Decision
+
+Three changes, each measured separately on corpora stripped of `.git` (git pack files are incompressible and would dilute every percentage):
+
+1. The solid encoder's window defaults to the smallest power of two covering the block (`store.solidWindowFor`). Applied to the solid site only: an isolated blob or the catalog gains nothing from a wide window and would only cost RAM. `--zstd-window` overrides it everywhere, and the resolved value is recorded in `meta`.
+2. An extension change flushes only once the block holds at least `DefaultMinSolidBlockSize` (1 MiB). Files arrive extension-sorted, so rare extensions pool on their own with no separate routing.
+3. The default block size moves from 16 MiB to 32 MiB, now that widening it also widens the window.
+
+Measured effect of the three together, against the previous default:
+
+| corpus | delta |
+|---|---|
+| express | -2.61% |
+| docker-compose | -2.43% |
+| react | -0.79% |
+| kubernetes | -1.65% |
+| loghub | +0.003% (24 bytes of added meta) |
+
+### Rejected: sorting files on (extension, basename, size)
+
+The intra-extension order is scan order, so vendored copies of the same file land far apart. Sorting on basename (the git packfile heuristic) was implemented and measured, and it lost on every corpus: kubernetes +2.40%, express +0.92%, docker-compose +0.49%, react +0.32%. Directory locality, which the stable sort preserves, is a better proxy for content similarity on source trees than name similarity is. Reverted, with the finding recorded at the sort site so it is not retried blind.
+
+### Consequences
+
+- (+) Ratio improves on every corpus that has enough material to fill a block, and the small-corpus regression from Item 3 is recovered.
+- (+) Write-side only: the frame header carries the window and klauspost's decoder accepts up to 512 MiB, so archives stay readable by binaries that predate this change.
+- (-) Peak RSS on the kubernetes corpus rises to ~361 MiB archiving and ~349 MiB extracting, from 258/270 MiB. Both figures already exceeded the 256 MiB Phase-6 ceiling before this change; that ceiling needs re-deriving or the read cache (4 decompressed blocks, `reader.go`) needs shrinking.
+- (-) 64 MiB blocks measured better still on kubernetes (-2.58% vs 16 MiB) but only there, for 148 MiB more peak RSS. Available via `--solid-block-size`.
+- Item 5 of the compression roadmap (streaming segments) stays closed: the limit it targeted was the window, which is now sized correctly.
