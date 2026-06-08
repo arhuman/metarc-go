@@ -166,7 +166,7 @@ siblings under the destination. Two sources may not share the same basename.`,
 	cmd.Flags().IntVar(&workers, "workers", 0, "number of analysis workers (default: runtime.NumCPU())")
 	cmd.Flags().StringVar(&dictCompress, "dict-compress", "", `dictionary compression mode: "prescan" (walk tree first) or "simple" (train mid-stream)`)
 	cmd.Flags().BoolVar(&noSolid, "no-solid", false, "disable solid block compression (use per-blob compression)")
-	cmd.Flags().StringVar(&solidBlockSize, "solid-block-size", "16MB", "solid block size threshold")
+	cmd.Flags().StringVar(&solidBlockSize, "solid-block-size", "32MB", "solid block size threshold; also sets the zstd match window")
 	cmd.Flags().StringSliceVar(&disableTransforms, "disable-transform", nil, `transform IDs to skip (e.g. "go-line-subst/v1")`)
 
 	cmd.Flags().IntVar(&zstdLevel, "zstd-level", -1, "zstd encoder level (1..11) applied to all chunk types; per-chunk overrides take precedence")

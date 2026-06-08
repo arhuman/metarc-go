@@ -48,14 +48,21 @@ type ArchiveOpts struct {
 	ZstdLevels store.ZstdConfig
 }
 
-// DefaultSolidBlockSize is the default solid block threshold (16 MiB).
+// DefaultSolidBlockSize is the default solid block threshold (32 MiB).
 //
 // Larger blocks keep more cross-file context inside a single zstd frame,
-// which is what makes solid mode pay off on source-code corpora. The 16 MiB
-// choice is bounded by the Phase-6 256 MiB peak-RSS ceiling: at concurrency
-// one (single-writer pipeline, ADR-008), one in-flight block plus its
-// compressed copy sits comfortably under the budget.
-const DefaultSolidBlockSize = 16 * 1024 * 1024
+// which is what makes solid mode pay off on source-code corpora. The block
+// size also sets the encoder's match window (store.solidWindowFor), so it
+// bounds how far back a match can reach.
+//
+// 32 MiB is the measured ratio-per-byte-of-RAM optimum (2026-08-14, corpora
+// without .git): moving from 16 MiB buys -1.24% on kubernetes and -0.55% on
+// react for +103 MiB of archive peak RSS, while 64 MiB buys a further -1.34%
+// on kubernetes alone for +148 MiB more. Corpora smaller than one block are
+// unaffected. Peak RSS on the kubernetes corpus is ~361 MiB archiving and
+// ~349 MiB extracting, both above the 256 MiB figure quoted in the Phase-6
+// notes, which the previous 16 MiB default already exceeded (258/270 MiB).
+const DefaultSolidBlockSize = 32 * 1024 * 1024
 
 // Archive creates a .marc archive of the directory tree rooted at root.
 // compressor is the blob compression method: "zstd" (default) or "none".
