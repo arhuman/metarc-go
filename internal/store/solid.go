@@ -44,6 +44,29 @@ type pendingBlob struct {
 	ulen        int64
 }
 
+// solidWindowFor returns the zstd match window for a solid block of blockSize
+// bytes: the smallest power of two that covers the whole block, so the last
+// byte of a block can still reference the first.
+//
+// Without this, zstd's level defaults apply an 8 MiB window (levels 3, 7 and
+// 11 alike), which leaves the tail of a 16 MiB block unable to match its head.
+// Widening the window is a write-side choice only: the frame header carries
+// the window size and klauspost's decoder accepts up to MaxWindowSize by
+// default, so archives stay readable by existing binaries.
+func solidWindowFor(blockSize int64) int {
+	if blockSize <= zstd.MinWindowSize {
+		return zstd.MinWindowSize
+	}
+	if blockSize >= zstd.MaxWindowSize {
+		return zstd.MaxWindowSize
+	}
+	w := int64(zstd.MinWindowSize)
+	for w < blockSize {
+		w <<= 1
+	}
+	return int(w)
+}
+
 // addBlob appends raw blob data to the current solid block. If the block would
 // exceed maxBlockSize, it is flushed first. Returns the new blob's BlobID.
 func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byte) (marc.BlobID, error) {
@@ -125,14 +148,15 @@ func (sa *solidAccumulator) flush() error {
 	// reused: at level 11 its match tables are sized from the window, so
 	// rebuilding one per block would dominate the cost of flushing.
 	if sa.enc == nil {
-		encOpts := []zstd.EOption{
+		window := sa.w.zstdCfg.WindowSize
+		if window == 0 {
+			window = solidWindowFor(sa.maxBlockSize)
+		}
+		enc, err := zstd.NewWriter(nil,
 			zstd.WithEncoderLevel(sa.w.zstdCfg.Solid),
 			zstd.WithEncoderConcurrency(1),
-		}
-		if sa.w.zstdCfg.WindowSize > 0 {
-			encOpts = append(encOpts, zstd.WithWindowSize(sa.w.zstdCfg.WindowSize))
-		}
-		enc, err := zstd.NewWriter(nil, encOpts...)
+			zstd.WithWindowSize(window),
+		)
 		if err != nil {
 			return fmt.Errorf("solidAccumulator.flush: create encoder: %w", err)
 		}
