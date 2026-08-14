@@ -12,7 +12,9 @@ It exploits cross-file and semantic redundancy before applying `zstd`.
 On my personal 6.5G source-code directory: **1.4G** with Metarc vs **1.8G** with `tar+zstd` (about **22% smaller**).
 
 On well-known open-source repositories, current benchmarks show archives
-**3–7% smaller than `tar+zstd`**, while archiving faster on the tested machine.
+**4% to 19% smaller than `tar+zstd`**: 4 to 10% when archiving a clone with its
+`.git`, 4 to 19% on the source tree alone, once the already-compressed packfiles
+stop diluting the measure.
 
 Not a tar replacement yet. A research-grade playground with reproducible benchmarks.
 
@@ -115,31 +117,69 @@ But the goal is to make it at least "as good" in most common cases, that's why w
 
 Previous comparisons used `tar+gzip`, we now use `tar+zstd` for a fairer comparison.
 
+Each repository is measured in two forms, because one number cannot answer both
+questions worth asking:
+
+* **full clone**, `.git` included: what a user actually gets when archiving a working directory.
+* **source tree only**, exported with `git archive` at the pinned commit: what the compressor actually did.
+
+The gap between the two is the weight of the packfiles, which are already
+deflate-compressed and pass through both tools untouched. On kubernetes `.git`
+is 12% of the input bytes but roughly 58% of the resulting archive.
+
+#### Full clone (.git included)
+
 `./scripts/run_bench.sh --type size`
 
-_marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 81.1M | 74.2M | 91.4% |
-| docker-compose | 4.5M | 702 | 1.1M | 1.1M | 99.1% |
-| vuejs | 9.9M | 728 | 3.2M | 3.2M | 97.5% |
-| numpy |  50M | 2364 | 18.4M | 17.5M | 95.3% |
-| redis |  29M | 1780 | 8.9M | 8.4M | 93.7% |
-| bootstrap |  27M | 816 | 13.9M | 13.3M | 95.9% |
-| express | 1.6M | 238 | 345.6K | 339.3K | 98.2% |
-| react |  65M | 6884 | 18.5M | 17.1M | 92.4% |
+| kubernetes | 376M | 29838 | 81.0M | 72.6M | 89.6% |
+| docker-compose | 4.5M | 702 | 1.1M | 1.0M | 95.5% |
+| vuejs | 9.9M | 728 | 3.2M | 3.1M | 95.9% |
+| numpy |  49M | 2364 | 18.4M | 17.4M | 94.6% |
+| redis |  28M | 1780 | 8.9M | 8.2M | 92.5% |
+| bootstrap |  28M | 816 | 14.1M | 13.5M | 95.5% |
+| express | 1.6M | 238 | 345.6K | 319.7K | 92.5% |
+| react |  65M | 6884 | 18.4M | 16.8M | 91.1% |
 
-> See [`docs/benchmarks.md`](docs/benchmarks.md) for the gz baseline, time benchmarks, methodology, and changelog.
+#### Source tree only (no .git)
+
+`./scripts/run_bench.sh --type size --corpus tree`
+
+_marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+
+| Repo | Original size | Files | tar+zstd size | marc size | % size of tar | full clone |
+|------|---------------|-------|-------------------------|-----------|---------------|------------|
+| kubernetes | 327M | 29813 | 34.6M | 28.0M | **81.1%** | 89.6% |
+| react |  54M | 6859 | 8.2M | 6.8M | **83.3%** | 91.1% |
+| redis |  23M | 1755 | 4.2M | 3.6M | **86.1%** | 92.5% |
+| numpy |  40M | 2339 | 8.9M | 8.0M | **89.7%** | 94.6% |
+| express | 1.3M | 213 | 135.8K | 123.1K | **90.6%** | 92.5% |
+| docker-compose | 3.7M | 677 | 421.8K | 387.8K | **91.9%** | 95.5% |
+| vuejs | 7.6M | 703 | 1.5M | 1.4M | **94.3%** | 95.9% |
+| bootstrap |  20M | 791 | 6.6M | 6.3M | **95.8%** | 95.5% |
+
+Rows sorted by advantage. bootstrap is the one corpus that gets slightly worse
+without `.git`: its source tree is itself full of incompressible content (fonts,
+images, minified bundles), so removing the packfiles unmasks nothing.
+
+> See [`docs/benchmarks.md`](docs/benchmarks.md) for the gz baseline, time benchmarks, methodology, reproducibility notes, and changelog.
 
 
 ### Speed
 
+Metarc archives faster than `tar+zstd` and `tar+gz` on the tested machine (1.1×
+to 2.8× on archive, thanks to parallel BLAKE3 hashing and lightweight
+transforms), but the published timing tables were measured on `v0.8.0` and have
+not been re-run since.
+
 > [!NOTE]
-> The latest version shows a visible compression improvement:
-> New metacompression transforms and speed/compression tradeoffs (raising the zstd compression level) explain the results.
->
-> Metarc is proving to be an efficient playground for exploring metacompression ideas, structural transforms, and cross-file compression strategies.
+> Recent versions traded some of that speed for a better ratio: a higher zstd
+> compression level, larger solid blocks, and additional transforms. Treat the
+> timing tables in [`docs/benchmarks.md`](docs/benchmarks.md) as an upper bound
+> until they are re-measured.
 
 ---
 
