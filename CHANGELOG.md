@@ -5,6 +5,8 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-14
+
 Archives written by this version remain readable by earlier binaries, and this
 version still extracts archives written by earlier ones.
 
