@@ -91,12 +91,16 @@ EXTRA_ARGS="--compression $COMPRESSION --type $TYPE --corpus $CORPUS $HOT_FLAG"
 
 # Default cache mode is COLD. Prompt for sudo upfront so subsequent
 # flush_cache calls inherit a cached credential instead of failing
-# silently per-iteration. If the prime fails, set BENCH_FLUSH_DEGRADED so
-# flush_cache silences its per-iteration warning and the run quietly
-# falls back to warm cache. Skipped when --hot is requested.
+# silently per-iteration. The probe runs `sudo -n purge` before `sudo -v`:
+# a sudoers entry scoped to purge alone (NOPASSWD: /usr/sbin/purge)
+# satisfies the first and still fails the second, so probing with -v would
+# declare the run degraded while the flush it actually needs works.
+# If both fail, set BENCH_FLUSH_DEGRADED so flush_cache silences its
+# per-iteration warning and the run quietly falls back to warm cache.
+# Skipped when --hot is requested.
 if [[ -z "$HOT_FLAG" && "$(uname -s)" == "Darwin" ]]; then
     echo "[run_bench] cold mode (default): priming sudo credential for purge" >&2
-    if ! sudo -v 2>/dev/null; then
+    if ! sudo -n purge 2>/dev/null && ! sudo -v 2>/dev/null; then
         echo "[run_bench] WARNING: sudo prime failed; cold mode will fall back to warm cache" >&2
         export BENCH_FLUSH_DEGRADED=1
     fi
