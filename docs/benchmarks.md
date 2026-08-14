@@ -306,6 +306,19 @@ Append `--mode log` to see progress output, or `--mode test` to verify round-tri
 
 ## Changelog
 
+2026-08-14 (v0.11.1): **Dependency bumps verified against both size tables.**
+`klauspost/compress` 1.18.5 to 1.19.2 and `modernc.org/sqlite` 1.48.2 to 1.56.0
+were merged, then both size tables re-run on the resulting binary. The
+`--corpus tree` table reproduced **identically, every cell**: the compressor
+library bump moves no output bytes. marc's sizes in the `--corpus full` table
+are unchanged too, but its ratios move by 1 to 5 points because the tar baseline
+drifted (kubernetes 81.0M to 79.2M, express 345.6K to 329.8K, react 18.4M to
+17.9M) on cached clones whose packs differ from the ones the table above was
+measured on. docker-compose reads 100.8% in that run, entirely from the baseline
+side. The table above is kept as the run it was; the README carries the v0.11.1
+figures. This is the second independent confirmation that `tree` is the only
+form worth quoting a number from.
+
 2026-08-14 (later still): **Two corpus forms, cached clones, `git archive` export.**
 `--corpus tree` measures a `git archive` export of the pinned commit instead of
 the clone. Clones are now cached in `/tmp/<name>` and reused when they already

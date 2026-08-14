@@ -11,10 +11,11 @@ It exploits cross-file and semantic redundancy before applying `zstd`.
 
 On my personal 6.5G source-code directory: **1.4G** with Metarc vs **1.8G** with `tar+zstd` (about **22% smaller**).
 
-On well-known open-source repositories, current benchmarks show archives
-**4% to 19% smaller than `tar+zstd`**: 4 to 10% when archiving a clone with its
-`.git`, 4 to 19% on the source tree alone, once the already-compressed packfiles
-stop diluting the measure.
+On well-known open-source repositories, current benchmarks show source trees
+**4% to 19% smaller than `tar+zstd`**, measured on `git archive` exports of
+pinned commits: the only form that reproduces byte for byte. Archiving a full
+clone gains less, from roughly parity to about 8%, because `.git` packfiles are
+already compressed and neither tool can do anything with them.
 
 Not a tar replacement yet. A research-grade playground with reproducible benchmarks.
 
@@ -131,39 +132,48 @@ is 12% of the input bytes but roughly 58% of the resulting archive.
 
 `./scripts/run_bench.sh --type size`
 
-_marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
-| kubernetes | 376M | 29838 | 81.0M | 72.6M | 89.6% |
-| docker-compose | 4.5M | 702 | 1.1M | 1.0M | 95.5% |
-| vuejs | 9.9M | 728 | 3.2M | 3.1M | 95.9% |
-| numpy |  49M | 2364 | 18.4M | 17.4M | 94.6% |
-| redis |  28M | 1780 | 8.9M | 8.2M | 92.5% |
-| bootstrap |  28M | 816 | 14.1M | 13.5M | 95.5% |
-| express | 1.6M | 238 | 345.6K | 319.7K | 92.5% |
-| react |  65M | 6884 | 18.4M | 16.8M | 91.1% |
+| kubernetes | 375M | 29838 | 79.2M | 72.6M | 91.7% |
+| docker-compose | 4.5M | 702 | 1.0M | 1.0M | 100.8% |
+| vuejs | 9.4M | 728 | 3.2M | 3.1M | 97.3% |
+| numpy |  49M | 2364 | 18.3M | 17.4M | 95.4% |
+| redis |  28M | 1780 | 8.8M | 8.2M | 93.8% |
+| bootstrap |  27M | 816 | 13.8M | 13.5M | 97.8% |
+| express | 1.6M | 238 | 329.8K | 319.7K | 96.9% |
+| react |  65M | 6884 | 17.9M | 16.8M | 93.5% |
+
+Treat this table as indicative, not reproducible. A shallow clone does not
+repack byte-identically between fetches, so the tar baseline drifts on its own:
+the previous run of these same pinned commits measured kubernetes at 81.0M and
+express at 345.6K against the 79.2M and 329.8K above, while marc's output was
+identical to the byte in both runs. docker-compose crossing 100% comes from that
+baseline side too: marc wrote the same bytes, tar's shrank.
 
 #### Source tree only (no .git)
 
 `./scripts/run_bench.sh --type size --corpus tree`
 
-_marc: metarc version v0.10.0-15-g686841db-dirty (686841db, 2026-08-14T04:29:13Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar | full clone |
 |------|---------------|-------|-------------------------|-----------|---------------|------------|
-| kubernetes | 327M | 29813 | 34.6M | 28.0M | **81.1%** | 89.6% |
-| react |  54M | 6859 | 8.2M | 6.8M | **83.3%** | 91.1% |
-| redis |  23M | 1755 | 4.2M | 3.6M | **86.1%** | 92.5% |
-| numpy |  40M | 2339 | 8.9M | 8.0M | **89.7%** | 94.6% |
-| express | 1.3M | 213 | 135.8K | 123.1K | **90.6%** | 92.5% |
-| docker-compose | 3.7M | 677 | 421.8K | 387.8K | **91.9%** | 95.5% |
-| vuejs | 7.6M | 703 | 1.5M | 1.4M | **94.3%** | 95.9% |
-| bootstrap |  20M | 791 | 6.6M | 6.3M | **95.8%** | 95.5% |
+| kubernetes | 327M | 29813 | 34.6M | 28.0M | **81.1%** | 91.7% |
+| react |  54M | 6859 | 8.2M | 6.8M | **83.3%** | 93.5% |
+| redis |  23M | 1755 | 4.2M | 3.6M | **86.1%** | 93.8% |
+| numpy |  40M | 2339 | 8.9M | 8.0M | **89.7%** | 95.4% |
+| express | 1.3M | 213 | 135.8K | 123.1K | **90.6%** | 96.9% |
+| docker-compose | 3.7M | 677 | 421.8K | 387.8K | **91.9%** | 100.8% |
+| vuejs | 7.6M | 703 | 1.5M | 1.4M | **94.3%** | 97.3% |
+| bootstrap |  20M | 791 | 6.6M | 6.3M | **95.8%** | 97.8% |
 
-Rows sorted by advantage. bootstrap is the one corpus that gets slightly worse
-without `.git`: its source tree is itself full of incompressible content (fonts,
-images, minified bundles), so removing the packfiles unmasks nothing.
+Rows sorted by advantage. This table is byte-reproducible: two builds hours
+apart (v0.10.0-15 and v0.11.1) produced these figures identically. bootstrap gains the
+least from dropping `.git` (2.0 points) because its source tree is itself full of
+incompressible content (fonts, images, minified bundles), so removing the
+packfiles unmasks little. Corpora rank by how much compressible text they hold.
 
 > See [`docs/benchmarks.md`](docs/benchmarks.md) for the gz baseline, time benchmarks, methodology, reproducibility notes, and changelog.
 
