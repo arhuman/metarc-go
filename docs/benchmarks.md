@@ -185,9 +185,59 @@ _ corpus: source tree only, exported with `git archive` at the pinned commit (no
 
 ### Time
 
-#### vs tar+zstd
+#### vs tar+zstd, v0.11.1 (current default: solid level 11)
 
  `./scripts/run_bench.sh --type time`
+
+_ marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ host: 26.5.2, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold) _
+
+| Repo | Files | tar+zstd arc | marc arc | tar+zstd ext | marc ext | marc speedup (arc) |
+|------|-------|------------------------|----------|-----------------------|----------|--------------------|
+| kubernetes | 29838 | 0m5.262s | 0m8.818s | 0m3.436s | 0m4.436s | 1.7× slower |
+| docker-compose | 702 | 0m0.309s | 0m0.186s | 0m0.261s | 0m0.160s | 1.7× faster |
+| vuejs | 728 | 0m0.376s | 0m0.278s | 0m0.252s | 0m0.147s | 1.4× faster |
+| numpy | 2364 | 0m0.870s | 0m1.377s | 0m0.417s | 0m0.425s | 1.6× slower |
+| redis | 1780 | 0m0.704s | 0m0.733s | 0m0.402s | 0m0.264s | 1× slower |
+| bootstrap | 816 | 0m0.387s | 0m0.416s | 0m0.252s | 0m0.207s | 1.1× slower |
+| express | 238 | 0m0.129s | 0m0.121s | 0m0.216s | 0m0.084s | 1.1× faster |
+| react | 6884 | 0m1.627s | 0m1.771s | 0m0.969s | 0m0.955s | 1.1× slower |
+
+> Measured per corpus with `compare_on_repo.sh` rather than in one
+> `run_bench.sh` pass, because the full cold run exceeds a single execution
+> slot. Same script, same methodology, one row per invocation.
+>
+> **These are second-pass numbers, and the reason matters.** The first pass of
+> this table read systematically high: kubernetes measured 13.286s, then
+> 10.279s, 9.175s, 9.275s, 8.818s across five repetitions of the same binary on
+> the same corpus. tar stayed inside 5.26s to 5.68s over the same repetitions,
+> so the drift is on marc's side, and cold mode runs no untimed warmup (unlike
+> `--hot`). Every row above was taken after the machine had settled. Discarding
+> the first pass moved kubernetes from "2.5× slower" to "1.7× slower" and redis
+> from "1.6× slower" to parity, so this is not a rounding detail. **Treat a
+> single cold row as ±15% on marc's columns.**
+>
+> **The cold flush is real, and was verified rather than assumed.** react
+> archived with tar in 1.758s cold against 0.447s hot, a 4× penalty, while marc
+> moved 2.071s to 2.258s. tar is I/O-bound and feels the flush; marc is
+> CPU-bound and does not.
+>
+> **The level is the whole story on the archive side.** react measured in two
+> alternating passes (level 3, level 11, level 3, level 11) gives 0.919s/0.978s
+> at level 3 for 17.9M (99.7% of tar), against 1.547s/1.502s at the level-11
+> default for 16.8M (93.5%): 1.6× the time for 6.2 points of ratio. The two
+> sizes reproduced exactly. Level 7 is the documented middle
+> (`internal/store/zstdcfg.go`).
+>
+> **The baseline moved more than marc did.** Against the v0.8.0 table below,
+> marc went 12.464s to 8.818s on kubernetes and 2.268s to 1.771s on react, while
+> tar went 18.748s to 5.262s and 4.636s to 1.627s. marc got about 25% faster;
+> tar got 3× faster. The host also moved (26.3.1 to 26.5.2). Cold-read
+> throughput on this machine roughly tripled, which removed the I/O floor that
+> had favoured a parallel reader over tar. The level-3 to level-11 change ate
+> marc's share of that speedup and then some.
+
+#### vs tar+zstd, v0.8.0 (historical, solid level 3)
 
 _ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 _ host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold) _
@@ -204,9 +254,39 @@ _ host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache fl
 | react | 6884 | 0m4.636s | 0m2.268s | 0m3.658s | 0m1.201s | 2× faster |
 
 
-#### vs tar+gz
+#### vs tar+gz, v0.11.1 (current default: solid level 11)
 
 `./scripts/run_bench.sh --type time --compression gz`
+
+_ marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_ host: 26.5.2, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold) _
+
+| Repo | Files | tar+gz arc | marc arc | tar+gz ext | marc ext | marc speedup (arc) |
+|------|-------|------------------------|----------|-----------------------|----------|--------------------|
+| kubernetes | 29838 | 0m9.111s | 0m8.614s | 0m3.731s | 0m4.413s | 1.1× faster |
+| docker-compose | 702 | 0m0.444s | 0m0.184s | 0m0.237s | 0m0.132s | 2.4× faster |
+| vuejs | 728 | 0m0.519s | 0m0.289s | 0m0.274s | 0m0.132s | 1.8× faster |
+| numpy | 2364 | 0m1.489s | 0m1.004s | 0m0.386s | 0m0.432s | 1.5× faster |
+| redis | 1780 | 0m0.975s | 0m0.699s | 0m0.307s | 0m0.269s | 1.4× faster |
+| bootstrap | 816 | 0m0.827s | 0m0.423s | 0m0.278s | 0m0.160s | 2× faster |
+| express | 238 | 0m0.310s | 0m0.107s | 0m0.236s | 0m0.064s | 2.9× faster |
+| react | 6884 | 0m2.192s | 0m1.478s | 0m0.859s | 0m0.918s | 1.5× faster |
+
+> **Against gzip, marc wins everywhere, and that is the informative part.**
+> The same binary that loses to tar+zstd on the four largest corpora beats
+> tar+gz on all eight. marc's own archive times are the same in both tables
+> (kubernetes 8.614s here, 8.818s there; react 1.478s here, 1.771s there): only
+> the baseline changed. marc sits between the two compressors in CPU cost while
+> producing smaller archives than either, which is the trade the project makes.
+>
+> **In gz mode the noisy side is tar, not marc.** Two passes of this table give
+> tar+gz on numpy at 2.787s then 1.489s, an 87% swing, while marc moved 1.179s
+> to 1.004s. In the zstd table it was the reverse. Published rows are the second
+> pass in both cases. First-pass speedup labels, for the spread: kubernetes 1.1×,
+> docker-compose 1.9×, vuejs 2.3×, numpy 2.4×, redis 1.3×, bootstrap 2.3×,
+> express 2.3×, react 1.2×.
+
+#### vs tar+gz, v0.8.0 (historical, solid level 3)
 
 _ marc: metarc version v0.8.0-5-g8045d64e-dirty (8045d64e, 2026-05-05T02:53:50Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 _ host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold) _
@@ -222,9 +302,11 @@ _ host: 26.3.1, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache fl
 | express | 238 | 0m0.415s | 0m0.146s | 0m0.317s | 0m0.088s | 2.8× faster |
 | react | 6884 | 0m5.349s | 0m1.887s | 0m3.271s | 0m1.274s | 2.8× faster |
 
-> marc is still faster that tar+zstd and tar+gz, due to parallel BLAKE3 hashing and lightweight transforms 
-> BUT current version traded some speed for better compression (zstd compression level) and some transforms
-> were added that slow down even further.
+> The two v0.8.0 tables are kept as the historical baseline. They were taken
+> with the solid level at 3, on a host whose cold-read throughput was about a
+> third of what the same machine now delivers. Their zstd archive-speed
+> advantage does not reproduce on v0.11.1; their gz advantage does, though
+> smaller on the corpora where tar+gz itself got faster.
 
 ---
 
@@ -305,6 +387,44 @@ Append `--mode log` to see progress output, or `--mode test` to verify round-tri
 ---
 
 ## Changelog
+
+2026-08-14 (v0.11.1, cold timings): **The archive-speed claim no longer holds.**
+The time table was re-run cold on v0.11.1, the first re-run since v0.8.0. marc
+now archives slower than tar+zstd on the four largest corpora (kubernetes 1.7×
+slower), at parity on redis, and faster on the three smallest, while extraction
+stays faster on six of eight. Two independent causes, both measured rather than
+inferred: the solid level moved from 3 to 11 (react in alternating passes:
+0.919s/0.978s and 99.7% of tar at level 3, against 1.547s/1.502s and 93.5% at
+level 11, so 1.6× the time for 6.2 points of ratio), and the host's cold-read
+throughput roughly tripled (tar on kubernetes went 18.748s to 5.262s while marc
+went 12.464s to 8.818s). The cold flush was verified, not assumed: react
+cold-vs-hot is 1.758s against 0.447s for tar, and 2.071s against 2.258s for
+marc. The v0.8.0 tables are kept as the historical baseline.
+
+The gz table was re-run too, and it inverts the conclusion: against tar+gz the
+same binary is faster on all eight corpora (1.1× to 2.9×). marc's archive times
+are the same in both tables; only the baseline differs. marc costs more CPU than
+zstd and less than gzip, while producing smaller archives than either. In gz
+mode the unstable side is tar (numpy 2.787s then 1.489s across two passes)
+rather than marc (1.179s then 1.004s).
+
+**Methodology finding from that run: cold mode has no warmup, and it shows.**
+The first pass of the table read high on every row. Repeating kubernetes five
+times gave 13.286s, 10.279s, 9.175s, 9.275s, 8.818s for the same binary and
+corpus, while tar stayed inside 5.26s to 5.68s: a 45% overstatement on the first
+measurement, entirely on marc's side. Published rows are therefore second-pass.
+`--hot` runs one untimed warmup; cold deliberately does not, on the grounds that
+a warmup would repopulate the page cache. That reasoning covers the cache but
+not CPU frequency, thermal state, or scheduler warmup, which is what these
+numbers expose. A warmup run whose page cache is flushed afterwards would fix
+the bias without warming the cache, and is the obvious next change to the
+harness.
+
+`scripts/run_bench.sh` and `scripts/compare_on_repo.sh` also had their sudo
+probe fixed as part of this run: they primed with `sudo -v`, which a sudoers
+entry scoped to `purge` alone does not satisfy, so a machine configured exactly
+for this benchmark would have been declared degraded and silently measured warm.
+The probe now tries `sudo -n purge` first.
 
 2026-08-14 (v0.11.1): **Dependency bumps verified against both size tables.**
 `klauspost/compress` 1.18.5 to 1.19.2 and `modernc.org/sqlite` 1.48.2 to 1.56.0

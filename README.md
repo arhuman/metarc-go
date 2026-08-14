@@ -180,16 +180,60 @@ packfiles unmasks little. Corpora rank by how much compressible text they hold.
 
 ### Speed
 
-Metarc archives faster than `tar+zstd` and `tar+gz` on the tested machine (1.1×
-to 2.8× on archive, thanks to parallel BLAKE3 hashing and lightweight
-transforms), but the published timing tables were measured on `v0.8.0` and have
-not been re-run since.
+Metarc optimizes for size, not for archive wall-clock.
+
+`./scripts/run_bench.sh --type time`
+
+_marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_host: 26.5.2, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold) _
+
+| Repo | Files | tar+zstd arc | marc arc | tar+zstd ext | marc ext | marc speedup (arc) |
+|------|-------|------------------------|----------|-----------------------|----------|--------------------|
+| kubernetes | 29838 | 0m5.262s | 0m8.818s | 0m3.436s | 0m4.436s | 1.7× slower |
+| docker-compose | 702 | 0m0.309s | 0m0.186s | 0m0.261s | 0m0.160s | 1.7× faster |
+| vuejs | 728 | 0m0.376s | 0m0.278s | 0m0.252s | 0m0.147s | 1.4× faster |
+| numpy | 2364 | 0m0.870s | 0m1.377s | 0m0.417s | 0m0.425s | 1.6× slower |
+| redis | 1780 | 0m0.704s | 0m0.733s | 0m0.402s | 0m0.264s | 1× slower |
+| bootstrap | 816 | 0m0.387s | 0m0.416s | 0m0.252s | 0m0.207s | 1.1× slower |
+| express | 238 | 0m0.129s | 0m0.121s | 0m0.216s | 0m0.084s | 1.1× faster |
+| react | 6884 | 0m1.627s | 0m1.771s | 0m0.969s | 0m0.955s | 1.1× slower |
+
+Archiving is slower on the four largest corpora and faster on the three
+smallest, with redis at parity. Extraction is faster on six out of eight.
+
+Against `tar+gz` the same binary is faster on **all eight** (1.1× to 2.9×, table
+in [`docs/benchmarks.md`](docs/benchmarks.md)). marc's own times are identical in
+both comparisons; only the baseline changes. It sits between gzip and zstd in
+CPU cost while producing smaller archives than either.
+
+> [!WARNING]
+> **The first heavy run of a session reads high.** Measuring kubernetes five
+> times gave 13.286s, 10.279s, 9.175s, 9.275s, 8.818s for the same binary on the
+> same corpus: the first pass overstated by 45%. tar was stable throughout
+> (5.26s to 5.68s), so the effect is on marc's side and cold mode runs no warmup.
+> Treat any single cold row as ±15%, and discard the first.
+
+That marc is slower at all is a deliberate default, not a regression: solid
+blocks are compressed at zstd level 11. On react, measured in two alternating
+passes so neither ordering nor warmup can explain the gap:
+
+| `--zstd-level-solid` | marc archive | marc size | % of tar+zstd |
+|---|---|---|---|
+| 3 | 0m0.95s | 17.9M | 99.7% |
+| 11 (default) | 0m1.52s | 16.8M | **93.5%** |
+
+Level 3 archives faster than `tar+zstd` and compresses like it; level 11 costs
+1.6× the time and buys 6.2 points of ratio. Both sizes reproduced exactly across
+the two passes. `--zstd-level-solid 7` sits between the two, keeping about half
+the ratio gain for roughly half the CPU.
 
 > [!NOTE]
-> Recent versions traded some of that speed for a better ratio: a higher zstd
-> compression level, larger solid blocks, and additional transforms. Treat the
-> timing tables in [`docs/benchmarks.md`](docs/benchmarks.md) as an upper bound
-> until they are re-measured.
+> Earlier releases claimed an archive-speed win, and the `v0.8.0` tables in
+> [`docs/benchmarks.md`](docs/benchmarks.md) still show it. Two things changed:
+> the solid level moved from 3 to 11, and the test machine's cold-read
+> throughput roughly tripled, which removed the I/O floor that had favoured a
+> parallel reader over `tar`. marc's own timings barely moved between the two
+> runs; the baseline did.
 
 ---
 
