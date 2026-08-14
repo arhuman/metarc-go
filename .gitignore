@@ -4,3 +4,7 @@ coverage.out
 .commitlint/
 *.swp
 .*.swp
+
+# Benchmark and ablation corpora: fetched, never committed.
+experiments/ablation/corpus/
+experiments/ablation/artifacts/
