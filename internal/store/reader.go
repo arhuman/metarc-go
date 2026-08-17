@@ -16,6 +16,20 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// maxDecompressedSize caps every zstd decode on the read path: the catalog
+// chunk, a standalone blob and a solid block alike. It is also the ceiling on
+// any bound derived from a catalog length, and the largest buffer the read path
+// will allocate from one.
+//
+// 512 MB is zstd.MaxWindowSize, the widest match window cmd/metarc accepts
+// (resolveZstdWindow) and the widest solidWindowFor can pick, so the cap cannot
+// reject a frame a legitimate encoder produced.
+const maxDecompressedSize = 512 * 1024 * 1024
+
+// chunkHeaderSize is the [Type 1B][Len 4B] prefix in front of every chunk
+// payload in a single-file archive.
+const chunkHeaderSize = 5
+
 // Reader reads entries and blobs from an existing .marc archive.
 type Reader struct {
 	db             *sql.DB
@@ -27,6 +41,7 @@ type Reader struct {
 	hasSolidBlocks bool             // true if blobs table has block_id column
 	solidCache     map[int64][]byte // offset -> decompressed solid block data
 	solidCacheKeys []int64          // insertion order for LRU eviction
+	blobBytesSize  int64            // size of the file holding blob bytes: the archive, or the legacy sidecar
 }
 
 // OpenReader opens an existing .marc archive for reading. It auto-detects
@@ -91,18 +106,25 @@ func openReaderSingle(marcPath string) (*Reader, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("store.OpenReader: expected catalog chunk type 0x%02x, got 0x%02x", marc.ChunkTypeCatalog, chunkHdr[0])
 	}
-	payloadLen := binary.BigEndian.Uint32(chunkHdr[1:5])
+	payloadLen := int64(binary.BigEndian.Uint32(chunkHdr[1:5]))
+
+	// Both the offset and the length come out of the archive. Reject a chunk the
+	// file cannot hold before sizing a buffer from its length, otherwise an
+	// edited footer or chunk header buys a 4 GB allocation attempt.
+	if catalogOff < 0 || catalogOff > info.Size()-chunkHeaderSize || payloadLen > info.Size()-catalogOff-chunkHeaderSize {
+		_ = f.Close()
+		return nil, fmt.Errorf("store.OpenReader: catalog chunk at %d claims %d bytes, archive holds %d", catalogOff, payloadLen, info.Size())
+	}
 
 	// Read compressed catalog payload.
 	compressed := make([]byte, payloadLen)
-	if _, err := f.ReadAt(compressed, catalogOff+5); err != nil {
+	if _, err := f.ReadAt(compressed, catalogOff+chunkHeaderSize); err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("store.OpenReader: read catalog payload: %w", err)
 	}
 
 	// Decompress with size limit to prevent zip-bomb style attacks.
-	const maxCatalogSize = 512 * 1024 * 1024 // 512 MB
-	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(uint64(maxCatalogSize)))
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxDecompressedSize))
 	if err != nil {
 		_ = f.Close()
 		return nil, fmt.Errorf("store.OpenReader: create zstd decoder: %w", err)
@@ -113,7 +135,7 @@ func openReaderSingle(marcPath string) (*Reader, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("store.OpenReader: decompress catalog: %w", err)
 	}
-	if len(dbBytes) > maxCatalogSize {
+	if len(dbBytes) > maxDecompressedSize {
 		_ = f.Close()
 		return nil, fmt.Errorf("store.OpenReader: decompressed catalog exceeds size limit (%d bytes)", len(dbBytes))
 	}
@@ -141,11 +163,12 @@ func openReaderSingle(marcPath string) (*Reader, error) {
 	}
 
 	r := &Reader{
-		db:         db,
-		arcFile:    f,
-		dbTmp:      tmpPath,
-		format:     marc.FormatSingleFile,
-		solidCache: make(map[int64][]byte),
+		db:            db,
+		arcFile:       f,
+		dbTmp:         tmpPath,
+		format:        marc.FormatSingleFile,
+		solidCache:    make(map[int64][]byte),
+		blobBytesSize: info.Size(),
 	}
 
 	// Load shared dictionary if present.
@@ -174,11 +197,19 @@ func openReaderSplit(marcPath string) (*Reader, error) {
 		return nil, fmt.Errorf("store.OpenReader: open blobs: %w", err)
 	}
 
+	blobInfo, err := blobFile.Stat()
+	if err != nil {
+		_ = blobFile.Close()
+		_ = db.Close()
+		return nil, fmt.Errorf("store.OpenReader: stat blobs: %w", err)
+	}
+
 	r := &Reader{
-		db:         db,
-		blobFile:   blobFile,
-		format:     marc.FormatSplitFile,
-		solidCache: make(map[int64][]byte),
+		db:            db,
+		blobFile:      blobFile,
+		format:        marc.FormatSplitFile,
+		solidCache:    make(map[int64][]byte),
+		blobBytesSize: blobInfo.Size(),
 	}
 	r.hasSolidBlocks = detectSolidColumns(db)
 	return r, nil
@@ -278,6 +309,10 @@ func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 		}
 	}
 
+	if err := r.checkBlobExtent(blobID, offset, clen, ulen); err != nil {
+		return nil, err
+	}
+
 	// Handle solid block blobs: decompress the whole block, slice out the blob.
 	if compressed == marc.CompressSolid {
 		return r.openSolidBlob(offset, clen, blockOffset, ulen)
@@ -287,7 +322,7 @@ func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 	if r.format == marc.FormatSingleFile {
 		blobReader = r.arcFile
 		// offset points to chunk header start: skip [Type 1B][Len 4B] = 5 bytes.
-		offset += 5
+		offset += chunkHeaderSize
 	} else {
 		blobReader = r.blobFile
 	}
@@ -295,11 +330,18 @@ func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 	section := io.NewSectionReader(blobReader, offset, clen)
 
 	if compressed == marc.CompressNone {
-		return io.NopCloser(section), nil
+		return newBoundedBlob(blobID, ulen, io.NopCloser(section)), nil
 	}
 
 	// Build decoder options; attach dictionary for dict-compressed blobs.
-	opts := []zstd.DOption{zstd.WithDecoderConcurrency(1)}
+	// The memory bound comes from the blob's own ulen: every frame in a .marc
+	// archive is produced by zstd.EncodeAll, whose declared window never exceeds
+	// max(content size, zstd.MinWindowSize), so this cannot reject a genuine
+	// blob while a forged ulen no longer inherits klauspost's 64 GiB default.
+	opts := []zstd.DOption{
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxMemory(blobDecoderMemory(ulen)),
+	}
 	if compressed == marc.CompressDict && r.dictData != nil {
 		opts = append(opts, zstd.WithDecoderDicts(r.dictData))
 	}
@@ -309,7 +351,83 @@ func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("store.OpenBlob: zstd reader for blob %d: %w", blobID, err)
 	}
 
-	return &zstdReadCloser{dec: dec}, nil
+	return newBoundedBlob(blobID, ulen, &zstdReadCloser{dec: dec}), nil
+}
+
+// checkBlobExtent rejects a blobs row describing bytes the archive cannot hold.
+// offset, clen and ulen are attacker-controlled in a crafted archive and each
+// one reaches an allocation, a section reader or a zstd decoder downstream, so
+// they are bounded here once instead of at every use site.
+//
+// offset is the chunk offset as stored in the catalog; the chunk header a
+// single-file archive puts in front of the payload is accounted for here.
+func (r *Reader) checkBlobExtent(blobID, offset, clen, ulen int64) error {
+	if offset < 0 || clen < 0 || ulen < 0 {
+		return fmt.Errorf("store.OpenBlob: blob %d: negative extent (offset %d, clen %d, ulen %d)", blobID, offset, clen, ulen)
+	}
+
+	payloadOff := offset
+	if r.format == marc.FormatSingleFile {
+		if offset > r.blobBytesSize-chunkHeaderSize {
+			return fmt.Errorf("store.OpenBlob: blob %d: chunk offset %d exceeds the %d bytes stored", blobID, offset, r.blobBytesSize)
+		}
+		payloadOff += chunkHeaderSize
+	}
+	if clen > r.blobBytesSize || payloadOff > r.blobBytesSize-clen {
+		return fmt.Errorf("store.OpenBlob: blob %d: %d compressed bytes at offset %d exceed the %d bytes stored", blobID, clen, payloadOff, r.blobBytesSize)
+	}
+	return nil
+}
+
+// blobDecoderMemory turns a catalog ulen into a zstd decoder memory bound.
+// klauspost reads this as the maximum match window when decoding a stream and
+// as the maximum decoded size when decoding in one shot, so the floor keeps a
+// small blob above the smallest legal window and the ceiling keeps a forged
+// ulen from re-enabling the library's 64 GiB default.
+func blobDecoderMemory(ulen int64) uint64 {
+	switch {
+	case ulen < zstd.MinWindowSize:
+		return uint64(zstd.MinWindowSize)
+	case ulen > maxDecompressedSize:
+		return maxDecompressedSize
+	default:
+		return uint64(ulen)
+	}
+}
+
+// newBoundedBlob caps a blob at the ulen its catalog row records. Every consumer
+// of OpenBlob inherits the bound, including the transform Reverse paths that
+// buffer a blob whole with io.ReadAll, so a crafted archive cannot grow one of
+// those buffers past the length it advertised.
+func newBoundedBlob(blobID, ulen int64, rc io.ReadCloser) io.ReadCloser {
+	return &boundedBlobReader{
+		lim:    io.LimitedReader{R: rc, N: ulen + 1},
+		closer: rc,
+		blobID: blobID,
+		ulen:   ulen,
+	}
+}
+
+// boundedBlobReader fails instead of truncating when a blob's payload runs past
+// the ulen recorded for it: the limit is ulen+1, so an exhausted limit means the
+// payload and the catalog disagree.
+type boundedBlobReader struct {
+	lim    io.LimitedReader
+	closer io.Closer
+	blobID int64
+	ulen   int64
+}
+
+func (b *boundedBlobReader) Read(p []byte) (int, error) {
+	n, err := b.lim.Read(p)
+	if b.lim.N == 0 {
+		return n, fmt.Errorf("store.OpenBlob: blob %d: payload exceeds the %d bytes recorded in the catalog", b.blobID, b.ulen)
+	}
+	return n, err
+}
+
+func (b *boundedBlobReader) Close() error {
+	return b.closer.Close()
 }
 
 // solidCacheMaxEntries is the maximum number of decompressed solid blocks cached.
@@ -321,13 +439,17 @@ func (r *Reader) openSolidBlob(chunkOffset, clen, blockOffset, ulen int64) (io.R
 	block, ok := r.solidCache[chunkOffset]
 	if !ok {
 		// Skip past the 5-byte chunk header to get the compressed payload.
-		payloadOff := chunkOffset + 5
+		// clen has already been bounded against the archive size by
+		// checkBlobExtent, which is what makes this allocation safe.
+		payloadOff := chunkOffset + chunkHeaderSize
 		compData := make([]byte, clen)
 		if _, err := r.arcFile.ReadAt(compData, payloadOff); err != nil {
 			return nil, fmt.Errorf("store.openSolidBlob: read compressed block at %d: %w", chunkOffset, err)
 		}
 
-		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1))
+		// A solid block decodes to the whole block, not to this blob, so ulen is
+		// not its bound: the shared cap applies instead.
+		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(maxDecompressedSize))
 		if err != nil {
 			return nil, fmt.Errorf("store.openSolidBlob: create decoder: %w", err)
 		}
@@ -347,12 +469,14 @@ func (r *Reader) openSolidBlob(chunkOffset, clen, blockOffset, ulen int64) (io.R
 		r.solidCacheKeys = append(r.solidCacheKeys, chunkOffset)
 	}
 
-	end := blockOffset + ulen
-	if end > int64(len(block)) {
-		return nil, fmt.Errorf("store.openSolidBlob: slice [%d:%d] out of bounds (block len %d)", blockOffset, end, len(block))
+	// Compared without adding blockOffset to ulen: both come from the catalog,
+	// and their sum overflows int64 for crafted values, which would turn this
+	// bounds check into the slice panic it exists to prevent.
+	if blockOffset < 0 || ulen < 0 || blockOffset > int64(len(block)) || ulen > int64(len(block))-blockOffset {
+		return nil, fmt.Errorf("store.openSolidBlob: slice at %d for %d bytes out of bounds (block len %d)", blockOffset, ulen, len(block))
 	}
 
-	return io.NopCloser(bytes.NewReader(block[blockOffset:end])), nil
+	return io.NopCloser(bytes.NewReader(block[blockOffset : blockOffset+ulen])), nil
 }
 
 // detectSolidColumns checks whether the blobs table has the block_id column
