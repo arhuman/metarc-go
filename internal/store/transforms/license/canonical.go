@@ -267,7 +267,10 @@ func (c *Canonical) Reverse(_ context.Context, r marc.Result, blobs marc.BlobRea
 		out = templateText
 	} else {
 		templateLines := strings.Split(templateText, "\n")
-		ops := expandOps(p.Ops)
+		ops, expandErr := expandOps(p.Ops, len(templateLines))
+		if expandErr != nil {
+			return fmt.Errorf("license-canonical: %w", expandErr)
+		}
 		original, applyErr := linediff.Apply(templateLines, ops)
 		if applyErr != nil {
 			return fmt.Errorf("license-canonical: apply diff: %w", applyErr)
@@ -307,12 +310,18 @@ func compactOps(ops []linediff.Op) []diffOp {
 	return result
 }
 
-// expandOps converts the compact form back to linediff.Op slice.
-func expandOps(compact []diffOp) []linediff.Op {
+// expandOps converts the compact form back to linediff.Op slice. Params comes
+// from untrusted archive data, so Equal counts are bounded by maxCount (the
+// template line count): a negative count would panic in make, a huge one
+// would attempt an equally huge allocation.
+func expandOps(compact []diffOp, maxCount int) ([]linediff.Op, error) {
 	var ops []linediff.Op
 	for _, d := range compact {
 		switch d.Kind {
 		case "=":
+			if d.Count < 0 || d.Count > maxCount {
+				return nil, fmt.Errorf("invalid equal op count %d (template has %d lines)", d.Count, maxCount)
+			}
 			// Equal ops carry a count but no line text; Apply reads from base.
 			ops = append(ops, linediff.Op{Kind: linediff.Equal, Lines: make([]string, d.Count)})
 		case "+":
@@ -321,5 +330,5 @@ func expandOps(compact []diffOp) []linediff.Op {
 			ops = append(ops, linediff.Op{Kind: linediff.Delete, Lines: []string{d.Line}})
 		}
 	}
-	return ops
+	return ops, nil
 }
