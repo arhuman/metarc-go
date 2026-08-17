@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -17,8 +18,21 @@ import (
 )
 
 // Extract restores a .marc archive into destDir.
+//
+// Every blob is integrity-checked before it is written out: the BLAKE3 prefix
+// recorded in the catalog must match the stored blob bytes, and the restored
+// file size must match the size recorded for the entry. The first mismatch
+// aborts the extraction, leaving whatever was already restored in place.
 func Extract(ctx context.Context, marcPath, destDir string) error {
 	slog.Debug("extracting", "archive", marcPath, "dest", destDir)
+
+	// The traversal guard below compares against an absolute destination: a
+	// relative destDir such as the default "." cleans to a prefix ("./") that
+	// no cleaned relative path ever carries, which would reject every entry.
+	absDest, err := filepath.Abs(destDir)
+	if err != nil {
+		return fmt.Errorf("runtime.Extract: resolve destination %s: %w", destDir, err)
+	}
 
 	r, err := store.OpenReader(marcPath)
 	if err != nil {
@@ -27,6 +41,9 @@ func Extract(ctx context.Context, marcPath, destDir string) error {
 	defer func() { _ = r.Close() }()
 
 	var count int64
+	// Blobs are shared by deduplicated entries; hashing each one once keeps
+	// verification cost proportional to unique blobs rather than to entries.
+	verified := make(map[int64]struct{})
 	err = r.WalkEntries(func(relPath string, e store.EntryRow) error {
 		select {
 		case <-ctx.Done():
@@ -39,11 +56,9 @@ func Extract(ctx context.Context, marcPath, destDir string) error {
 			return nil
 		}
 
-		fullPath := filepath.Join(destDir, relPath)
-
-		// Prevent path traversal (Zip Slip): ensure resolved path stays within destDir.
-		if !strings.HasPrefix(filepath.Clean(fullPath), filepath.Clean(destDir)+string(os.PathSeparator)) {
-			return fmt.Errorf("extract: path traversal attempt: %s", relPath)
+		fullPath, err := safeJoin(absDest, relPath)
+		if err != nil {
+			return err
 		}
 
 		mode := e.Mode
@@ -54,7 +69,7 @@ func Extract(ctx context.Context, marcPath, destDir string) error {
 			if !filepath.IsAbs(resolvedTarget) {
 				resolvedTarget = filepath.Join(filepath.Dir(fullPath), resolvedTarget)
 			}
-			if !strings.HasPrefix(filepath.Clean(resolvedTarget), filepath.Clean(destDir)+string(os.PathSeparator)) {
+			if !strings.HasPrefix(filepath.Clean(resolvedTarget), absDest+string(os.PathSeparator)) {
 				return fmt.Errorf("extract: symlink target escapes destination: %s -> %s", relPath, e.LinkTarget)
 			}
 
@@ -80,7 +95,7 @@ func Extract(ctx context.Context, marcPath, destDir string) error {
 			return nil
 		}
 
-		return extractFile(ctx, r, fullPath, relPath, e, &count)
+		return extractFile(ctx, r, fullPath, relPath, e, &count, verified)
 	})
 
 	if err != nil {
@@ -88,13 +103,12 @@ func Extract(ctx context.Context, marcPath, destDir string) error {
 	}
 
 	// Second pass: restore directory mtimes (children may have updated them).
-	cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
 	err = r.WalkEntries(func(relPath string, e store.EntryRow) error {
 		if relPath == "." || !e.Mode.IsDir() {
 			return nil
 		}
-		fullPath := filepath.Join(destDir, relPath)
-		if !strings.HasPrefix(filepath.Clean(fullPath), cleanDest) {
+		fullPath, err := safeJoin(absDest, relPath)
+		if err != nil {
 			return nil
 		}
 		restoreMetadata(fullPath, e.Mode, e.MtimeNs, e.UID, e.GID)
@@ -108,10 +122,41 @@ func Extract(ctx context.Context, marcPath, destDir string) error {
 	return nil
 }
 
-func extractFile(ctx context.Context, r *store.Reader, fullPath, relPath string, e store.EntryRow, count *int64) error {
+// safeJoin resolves relPath under absDest, which must already be absolute and
+// clean. It rejects anything that would land outside absDest (Zip Slip),
+// including absolute entry names, which filepath.Join would otherwise silently
+// reinterpret as relative.
+func safeJoin(absDest, relPath string) (string, error) {
+	if filepath.IsAbs(relPath) {
+		return "", fmt.Errorf("extract: absolute entry name: %s", relPath)
+	}
+	fullPath := filepath.Join(absDest, relPath)
+	if !strings.HasPrefix(fullPath, absDest+string(os.PathSeparator)) {
+		return "", fmt.Errorf("extract: path traversal attempt: %s", relPath)
+	}
+	return fullPath, nil
+}
+
+func extractFile(ctx context.Context, r *store.Reader, fullPath, relPath string, e store.EntryRow, count *int64, verified map[int64]struct{}) error {
 	// Ensure parent directory exists.
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		return fmt.Errorf("extract: mkdirall for %s: %w", relPath, err)
+	}
+
+	if e.BlobID != 0 {
+		if _, done := verified[e.BlobID]; !done {
+			if err := r.VerifyBlob(e.BlobID); err != nil {
+				return fmt.Errorf("extract: %s: %w", relPath, err)
+			}
+			verified[e.BlobID] = struct{}{}
+		}
+	}
+
+	// Drop any existing entry first: without this, a symlink already present
+	// at this path (from a prior extraction, a checkout, a shared directory)
+	// is followed by O_CREATE and the write lands outside the destination.
+	if err := os.Remove(fullPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("extract: remove existing %s: %w", relPath, err)
 	}
 
 	f, err := os.OpenFile(fullPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, e.Mode.Perm())
@@ -152,6 +197,14 @@ func extractFile(ctx context.Context, r *store.Reader, fullPath, relPath string,
 				return fmt.Errorf("extract: copy blob for %s: %w", relPath, err)
 			}
 		}
+	}
+
+	st, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("extract: stat restored %s: %w", relPath, err)
+	}
+	if st.Size() != e.Size {
+		return fmt.Errorf("extract: %s: restored %d bytes, catalog records %d", relPath, st.Size(), e.Size)
 	}
 
 	restoreMetadata(fullPath, e.Mode, e.MtimeNs, e.UID, e.GID)

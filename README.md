@@ -272,6 +272,20 @@ marc extract repo.marc --dest restored/
 marc inspect repo.marc
 ```
 
+### Verify
+
+Rehash the whole archive and compare against the integrity values it stores:
+the footer BLAKE3 prefix and the per-blob BLAKE3 prefix in the catalog. Exits
+non-zero on any mismatch. `marc extract` checks each blob it restores, so
+`verify` is for checking an archive without unpacking it.
+
+```bash
+marc verify repo.marc
+```
+
+Both checks detect corruption, not tampering: the hashes live inside the file
+they cover and are not signed.
+
 ### Benchmark
 
 ```bash

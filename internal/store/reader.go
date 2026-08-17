@@ -11,6 +11,7 @@ import (
 
 	"github.com/arhuman/metarc-go/pkg/marc"
 	"github.com/klauspost/compress/zstd"
+	"github.com/zeebo/blake3"
 
 	_ "modernc.org/sqlite"
 )
@@ -436,6 +437,94 @@ func (r *Reader) QueryBlobSHAs() ([][]byte, error) {
 		shas = append(shas, shaBytes)
 	}
 	return shas, rows.Err()
+}
+
+// QueryBlobIDs returns every blob id in the catalog, in ascending order.
+func (r *Reader) QueryBlobIDs() ([]int64, error) {
+	rows, err := r.db.Query(`SELECT id FROM blobs ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("store.QueryBlobIDs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("store.QueryBlobIDs: scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// VerifyBlob recomputes the BLAKE3 hash of blob blobID and compares it with the
+// hash recorded in blobs.sha, which the write path computed over the blob's
+// stored content: post-transform, pre-compression bytes. OpenBlob hands back
+// exactly those bytes (zstd already reversed, solid block already sliced at the
+// blob's block_offset/ulen), so this is the one place a comparison is
+// meaningful. Any transform Reverse must run after it, never before.
+//
+// The stored hash is truncated to marc.StoredSHALen bytes once an archive is
+// finalized, so only that prefix is compared. It detects corruption, not
+// tampering: an attacker who rewrites a blob can rewrite its catalog hash too.
+func (r *Reader) VerifyBlob(blobID int64) error {
+	var stored []byte
+	if err := r.db.QueryRow(`SELECT sha FROM blobs WHERE id = ?`, blobID).Scan(&stored); err != nil {
+		return fmt.Errorf("store.VerifyBlob: lookup blob %d: %w", blobID, err)
+	}
+	if len(stored) == 0 {
+		return fmt.Errorf("store.VerifyBlob: blob %d: catalog records no hash", blobID)
+	}
+
+	rc, err := r.OpenBlob(blobID)
+	if err != nil {
+		return fmt.Errorf("store.VerifyBlob: %w", err)
+	}
+	defer func() { _ = rc.Close() }()
+
+	h := blake3.New()
+	if _, err := io.Copy(h, rc); err != nil {
+		return fmt.Errorf("store.VerifyBlob: read blob %d: %w", blobID, err)
+	}
+	sum := h.Sum(nil)
+
+	n := min(len(stored), len(sum))
+	if !bytes.Equal(stored[:n], sum[:n]) {
+		return fmt.Errorf("store.VerifyBlob: blob %d: hash mismatch (catalog %x, computed %x)", blobID, stored[:n], sum[:n])
+	}
+	return nil
+}
+
+// VerifyFooter recomputes the BLAKE3 hash over every archive byte that precedes
+// the footer and compares it with the 8-byte prefix the footer stores. checked
+// is false for legacy split-file archives, which carry no footer to check.
+//
+// This reads the whole file, so it belongs to `marc verify` and never to
+// OpenReader, which must stay proportional to the catalog.
+func (r *Reader) VerifyFooter() (checked, ok bool, err error) {
+	if r.format != marc.FormatSingleFile || r.arcFile == nil {
+		return false, false, nil
+	}
+
+	info, err := r.arcFile.Stat()
+	if err != nil {
+		return true, false, fmt.Errorf("store.VerifyFooter: stat: %w", err)
+	}
+	size := info.Size()
+
+	footer, err := marc.ReadFooter(r.arcFile, size)
+	if err != nil {
+		return true, false, fmt.Errorf("store.VerifyFooter: %w", err)
+	}
+
+	h := blake3.New()
+	if _, err := io.Copy(h, io.NewSectionReader(r.arcFile, 0, size-int64(marc.FooterSize))); err != nil {
+		return true, false, fmt.Errorf("store.VerifyFooter: read archive: %w", err)
+	}
+	sum := h.Sum(nil)
+
+	return true, bytes.Equal(sum[:len(footer.Checksum)], footer.Checksum[:]), nil
 }
 
 // PlanLogStat holds per-transform aggregated plan_log stats.

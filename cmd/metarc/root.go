@@ -44,6 +44,7 @@ func newRootCmd() *cobra.Command {
 		newArchiveCmd(),
 		newExtractCmd(),
 		newInspectCmd(),
+		newVerifyCmd(),
 		newBenchCmd(),
 	)
 	return cmd

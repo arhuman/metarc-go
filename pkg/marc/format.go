@@ -42,7 +42,25 @@ const FooterSize = 24
 type Footer struct {
 	CatalogOffset    uint64
 	BlobRegionOffset uint64
-	Checksum         [8]byte
+
+	// Checksum is the first 8 bytes of the BLAKE3 hash of every archive byte
+	// preceding the footer: magic, blob region and catalog chunk. The footer
+	// itself is not covered.
+	//
+	// It guarantees detection of accidental corruption, a flipped bit, a
+	// truncated write, a bad sector, with a 1-in-2^64 miss rate.
+	//
+	// It guarantees nothing against tampering. The value lives inside the file
+	// it covers and is not signed, so anyone able to edit the archive can
+	// recompute it. Treat it as a corruption check only; it is not a
+	// tamper-evidence or authenticity mechanism, and 64 bits is deliberately
+	// too short to be used as one. The same holds for the truncated per-blob
+	// hashes in blobs.sha (see StoredSHALen).
+	//
+	// Nothing verifies it at open time: `marc verify` recomputes it on demand,
+	// because checking it requires reading the whole archive while OpenReader
+	// must stay proportional to the catalog.
+	Checksum [8]byte
 }
 
 // WriteFooter writes the footer to w in big-endian format.
