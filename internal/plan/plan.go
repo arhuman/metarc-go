@@ -8,9 +8,19 @@ import (
 	"github.com/arhuman/metarc-go/pkg/marc"
 )
 
-// Registry is the ordered list of transforms. The store iterates this list
-// and calls Apply on each applicable transform until one returns handled=true.
-var Registry []marc.Transform
+// Entry pairs a transform with whether the planner may select it when writing.
+// Read capability is implicit: presence in Registry means the transform is
+// decodable, since removing it would break every archive that already uses it.
+type Entry struct {
+	Transform marc.Transform
+	Write     bool // the planner may select this transform when archiving
+}
+
+// Registry is the ordered list of transforms. The store iterates the entries
+// whose Write is true and calls Apply on each applicable transform until one
+// returns handled=true. Extraction iterates the whole list, so every entry is
+// decodable whatever its Write value.
+var Registry []Entry
 
 // Disabled is the set of transform IDs to skip during planning.
 // Set before archiving; keyed by TransformID string.
@@ -25,11 +35,16 @@ type Decision struct {
 	Reason        string // human-readable explanation
 }
 
-// RegistryIDs returns a comma-separated list of registered transform IDs.
+// RegistryIDs returns a comma-separated list of the write-selectable transform
+// IDs, in registry order. Entries that are decode-only are omitted: they name
+// no choice a caller can make, so offering them through --disable-transform or
+// recording them as the archive's active set would be misleading.
 func RegistryIDs() string {
-	ids := make([]string, len(Registry))
-	for i, t := range Registry {
-		ids[i] = string(t.ID())
+	ids := make([]string, 0, len(Registry))
+	for _, e := range Registry {
+		if e.Write {
+			ids = append(ids, string(e.Transform.ID()))
+		}
 	}
 	return strings.Join(ids, ",")
 }

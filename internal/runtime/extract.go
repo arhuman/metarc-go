@@ -214,13 +214,15 @@ func extractFile(ctx context.Context, r *store.Reader, fullPath, relPath string,
 
 // resolveTransform returns the Transform for the given ID, or nil for raw (empty string).
 // Returns an error if the archive requires a transform that is not registered.
+// The whole registry is searched, decode-only entries included: an archive written
+// by an older binary may carry a transform the planner no longer selects.
 func resolveTransform(id string) (marc.Transform, error) {
 	if id == "" {
 		return nil, nil
 	}
-	for _, t := range plan.Registry {
-		if string(t.ID()) == id {
-			return t, nil
+	for _, entry := range plan.Registry {
+		if string(entry.Transform.ID()) == id {
+			return entry.Transform, nil
 		}
 	}
 	return nil, fmt.Errorf("archive requires transform %q which is not registered", id)

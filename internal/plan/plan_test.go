@@ -35,39 +35,55 @@ func (f *fakeTransform) Reverse(_ context.Context, _ marc.Result, _ marc.BlobRea
 }
 
 // withRegistry temporarily replaces Registry for the duration of a test.
-func withRegistry(t *testing.T, transforms []marc.Transform) {
+func withRegistry(t *testing.T, entries []Entry) {
 	t.Helper()
 	orig := Registry
-	Registry = transforms
+	Registry = entries
 	t.Cleanup(func() { Registry = orig })
+}
+
+// writable wraps transforms as write-selectable registry entries.
+func writable(ts ...marc.Transform) []Entry {
+	entries := make([]Entry, len(ts))
+	for i, t := range ts {
+		entries[i] = Entry{Transform: t, Write: true}
+	}
+	return entries
 }
 
 func TestRegistryIDs(t *testing.T) {
 	tests := []struct {
 		name     string
-		registry []marc.Transform
+		registry []Entry
 		want     string
 	}{
 		{
 			name:     "empty registry",
-			registry: []marc.Transform{},
+			registry: []Entry{},
 			want:     "",
 		},
 		{
-			name: "single transform",
-			registry: []marc.Transform{
-				&fakeTransform{id: "test/v1"},
-			},
-			want: "test/v1",
+			name:     "single transform",
+			registry: writable(&fakeTransform{id: "test/v1"}),
+			want:     "test/v1",
 		},
 		{
 			name: "multiple transforms",
-			registry: []marc.Transform{
+			registry: writable(
 				&fakeTransform{id: "dedup/v1"},
 				&fakeTransform{id: "goline/v1"},
 				&fakeTransform{id: "license/v1"},
-			},
+			),
 			want: "dedup/v1,goline/v1,license/v1",
+		},
+		{
+			name: "decode-only entries are omitted",
+			registry: []Entry{
+				{Transform: &fakeTransform{id: "dedup/v1"}, Write: true},
+				{Transform: &fakeTransform{id: "decode-only/v2"}, Write: false},
+				{Transform: &fakeTransform{id: "license/v1"}, Write: true},
+			},
+			want: "dedup/v1,license/v1",
 		},
 	}
 

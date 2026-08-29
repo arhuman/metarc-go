@@ -478,3 +478,69 @@ The proposal made `dict_block_id` a column of a new `blocks` table, since `offse
 - (-) Archiving now drains the whole scan before opening the writer, because the gate needs per-extension totals over the entire tree (over every root, for a multi-root archive). Directory and file metadata were already fully buffered before any content was read, so this moves no memory; it does mean a scan error surfaces before the output file is created rather than after.
 - (-) `--no-inter-block-dict` does not reproduce a pre-A4 archive byte for byte: the tree comes back to 29 403 885 against HEAD's 29 402 427, the 1458-byte difference being the all-NULL `dict_block_id` column and its DDL, consistent with the 1309 bytes measured for the column above. The flag removes the mechanism, not the schema.
 - Supersedes the static-dictionary approach of ADR-011 and the compression roadmap's Item 4.
+
+---
+
+## ADR-020: A transform can be registered for decode only
+
+**Status**: Accepted
+**Date**: 2026-09-26
+
+### Context
+
+`log-date-subst/v2` was registered and always on, and it cost archive bytes. Measured on `experiments/ablation/corpus/loghub`, three interleaved runs per point:
+
+| variant | archive bytes | wall |
+|---|---|---|
+| as shipped | 2 048 634 | 0.18 to 0.21 s |
+| `--disable-transform log-date-subst/v2` | 2 047 879 | 0.09 s |
+
+Disabling it saved 755 bytes and halved the wall time. `--explain` showed why the regression stayed invisible: the transform fired on 1 file out of 100 (`Windows_2k.log`) and claimed roughly 92.9 KB saved.
+
+The mechanism is in the transform's own doc comment. It replaces each timestamp with a 10 to 13 byte token of which 8 are a `unix_nanos int64` big-endian. Those 8 bytes are near-incompressible, while the text they replace (`2016-09-29 02:04:xx`) is highly redundant line to line and is exactly what zstd models well. The transform therefore trades a compressible pattern for an incompressible one, and it does so losslessly, so nothing in the round-trip tests could catch it.
+
+The root cause of it ever being selected is `CostEstimate`. It counts the text bytes removed and ignores the binary bytes added, so its estimate bears no arithmetic relation to the archive delta. A cost model that measures only one side of a substitution cannot predict a substitution's effect, and the planner's `gain > cpu_cost` rule trusted that estimate.
+
+Deleting the entry from `plan.Registry` was not available. `runtime.resolveTransform` searches the registry by ID and fails with `archive requires transform %q which is not registered` when absent (ADR-012), so removing the entry would make every existing archive containing a logdate-transformed file unextractable. Retiring a transform from selection and removing its decoder are different decisions, and only the first one is wanted here.
+
+### Decision
+
+A registry entry carries a write capability, so one list stays the single source of truth for both paths.
+
+1. **`plan.Registry` becomes `[]plan.Entry`**, where `Entry` pairs a `marc.Transform` with a `Write bool`. Read capability is implicit and always true: presence in the registry means the transform is decodable, because removing it would break archives that already use it, and there is no case where a registered transform should be undecodable. A single field expresses the whole useful state space, and the invariant "registered implies decodable" becomes structural rather than a convention. A bitmask was rejected: the state space is closed and a named field reads better than decoding `1|2`.
+2. **The write-side chain filters on `Write`.** `store.writeFileWithSHA` skips an entry whose `Write` is false before any `Applicable` or `CostEstimate` call, so a decode-only transform costs the write path nothing.
+3. **The extract path iterates the whole registry, unfiltered.** `resolveTransform` needed no logic change beyond the field access: an archive written by an older binary resolves its transform exactly as before.
+4. **`log-date-subst/v2` is present with `Write: false`.** It is never selected when archiving and always available when extracting.
+5. **`RegistryIDs` returns only the write-selectable IDs.** It feeds the `--disable-transform` help text and the archive's `transforms` meta value, and both describe choices a caller can make. Offering a transform that can no longer be selected, or recording it as part of an archive's active set, would be misleading.
+6. **`js-line-subst/v1` and `py-line-subst/v1` are registered with `Write: false`.** They were previously absent from the registry and explained by a 12-line comment. Registering them decode-only puts the intent in the code, and makes any archive that ever carried them extractable.
+
+Measured after the change, three interleaved runs per point against the previous binary:
+
+| corpus | before | after | delta |
+|---|---|---|---|
+| loghub | 2 048 634 | 2 047 871 | -763 |
+| kubernetes tree (263 MB, no `.git`) | 28 998 973 | 28 998 968 | -5 |
+| react | 17 896 545 | 17 896 802 | +257 |
+
+loghub saves 8 bytes more than `--disable-transform` does, because the flag leaves the `transforms` meta string intact while the retirement drops `,log-date-subst/v2` from it: 18 uncompressed characters that cost 8 bytes in the compressed catalog.
+
+The react figure is the same mechanism in the other direction, and it is not a data-path change. The blob regions of the before and after archives are byte-identical at 17 513 856 bytes, and the plan log is identical entry for entry (255 dedup, 2 license-canonical, 27 passthrough, 6616 raw), so logdate applied to nothing there before or after. The whole +257 is in the compressed catalog, whose only content difference is the shorter meta string. Level-11 zstd on a 382 KB catalog is not monotonic in input size, so removing 18 bytes of a compressible string cost 257 compressed bytes on react and saved 8 on loghub. This is the class of effect ADR-019 recorded for its all-NULL `dict_block_id` column.
+
+### Rejected: a second registry for decode-only transforms
+
+A separate `DecodeRegistry` would keep `Registry` typed as `[]marc.Transform` and leave every existing call site untouched. It was rejected because it splits the invariant across two lists: a transform present in one and absent from the other is a silent bug, and every future reader has to know which list to consult for which path. The capability belongs to the entry, not to which list it was filed in.
+
+### Rejected: fixing `CostEstimate` instead
+
+The estimate could account for the binary bytes it adds, which would make the planner decline the transform on its own. That is the better fix in principle and it is not sufficient here: the transform would still be selected wherever its corrected estimate happened to come out positive, and the substitution it performs is adverse to the final compressor by construction, not only when the arithmetic says so. Retiring it from selection states the finding; correcting the estimate would only move the threshold. The `CostEstimate` defect is recorded here so the next transform's cost model is not written the same way.
+
+### Consequences
+
+- (+) Every existing archive still extracts, byte-exactly, including one whose entries carry `log-date-subst/v2`. A test builds such an archive through the registry seam and round-trips it, so the guarantee is pinned rather than asserted.
+- (+) The loghub regression is gone with no flag needed, and wall time on that corpus halves from 0.18 to 0.09 s because the transform no longer scans and rewrites its one matching file.
+- (+) Retiring a transform is now a one-field change with no effect on the read path, so a future transform that measures badly can be withdrawn without a format decision.
+- (+) `jsline` and `pyline` stop being documented-by-absence. `marc --help` reports all three as `decode-only` rather than omitting them.
+- (-) The `transforms` meta value of a new archive no longer lists every transform the binary can decode, only the ones its planner could select. A reader wanting the decode set must consult the binary, not the archive. Nothing in the codebase reads this value back; it is recorded for forward compatibility.
+- (-) react gains 257 bytes and the kubernetes tree loses 5, both from catalog compression noise on a changed meta string rather than from any change to stored content. The effect is under 0.002 pp and the blob regions are provably identical.
+- (-) `plan.Registry` is now a package-local type rather than `[]marc.Transform`, so a test that substitutes a registry constructs `plan.Entry` values. One existing test helper (`internal/plan/plan_test.go:withRegistry`) was updated for this.
+- Closes P0.1 of `.claude/doc/metacompression-proposals.md`. The broken syslog padding preservation contract that item also records was already addressed separately by `encodeDisabledFmts`, which matches `fmtSyslog`, `fmtLog4j` and `fmtPython` on decode but never emits them.

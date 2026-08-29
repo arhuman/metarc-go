@@ -52,10 +52,13 @@ func newRootCmd() *cobra.Command {
 
 func printTransforms(cmd *cobra.Command) {
 	cmd.Println("\nTransforms:")
-	for _, t := range plan.Registry {
-		id := string(t.ID())
+	for _, entry := range plan.Registry {
+		id := string(entry.Transform.ID())
 		state := "enabled"
-		if plan.Disabled[id] {
+		switch {
+		case !entry.Write:
+			state = "decode-only"
+		case plan.Disabled[id]:
 			state = "disabled"
 		}
 		cmd.Printf("  %-25s %s\n", id, state)

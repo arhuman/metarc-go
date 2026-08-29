@@ -562,10 +562,14 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 		f = src
 	}
 
-	for _, t := range plan.Registry {
+	for _, entry := range plan.Registry {
 		if handled {
 			break
 		}
+		if !entry.Write {
+			continue
+		}
+		t := entry.Transform
 		if plan.Disabled[string(t.ID())] {
 			continue
 		}
