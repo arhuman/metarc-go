@@ -54,6 +54,17 @@ output.marc
 | **Metarc** | **Semantic dedup + cross-file redundancy, single-file archive** |
 | gzip / zstd | Byte-stream compression |
 
+**Key files by task**:
+
+| To do this | Start here |
+|------------|-----------|
+| Implement a new Transform | `pkg/marc/transform.go` (interface), then register in `internal/plan/transforms.go` |
+| Debug archive write issues | `internal/store/store.go`, `internal/runtime/archive.go`, §5 |
+| Debug extraction issues | `internal/store/reader.go`, `internal/runtime/extract.go`, §6 |
+| Understand the `.marc` format | §3, then `pkg/marc/format.go` |
+| Understand the catalog schema | §4, then `pkg/marc/format.go:SchemaDDL` |
+| Tune compression ratio | §8 (solid blocks), `internal/store/{solid,zstdcfg}.go` |
+
 ---
 
 ## 2. Package Map
@@ -83,9 +94,11 @@ metarc/
 │   │       ├── goline/goline.go      go-line-subst/v1 (lossless, default)
 │   │       ├── pyline/pyline.go      py-line-subst/v1 (lossless, WIP — not registered)
 │   │       ├── jsline/jsline.go      js-line-subst/v1 (lossless, WIP — not registered)
-│   │       ├── json/canonical.go     json-canonical/v1 (opt-in)
-│   │       ├── license/canonical.go  license-canonical/v1 (opt-in)
-│   │       ├── logtempl/template.go  log-template/v1 (opt-in)
+│   │       ├── passthrough/          passthrough/v1 (lossless, default)
+│   │       ├── license/canonical.go  license-canonical/v1 (lossless, default)
+│   │       ├── logdate/logdate.go    log-date-subst/v2 (lossless, default)
+│   │       ├── json/canonical.go     json-canonical/v1 (lossy, opt-in)
+│   │       ├── logtempl/template.go  log-template/v1 (lossy, opt-in)
 │   │       └── delta/neardelta.go    near-dup-delta/v1 (stub)
 │   └── runtime/         Archive/Extract orchestration, worker pool
 │
@@ -94,15 +107,15 @@ metarc/
 
 ### Responsibilities
 
-| Package | Responsibility |
-|---------|---------------|
-| `cmd/metarc` | CLI parsing, flag binding, output formatting |
-| `pkg/marc` | Format spec, Transform interface, stable public types |
-| `internal/scan` | Walk filesystem, collect `marc.Entry` without analyzing content |
-| `internal/analyze` | BLAKE3-256 hashing, QuickSig computation |
-| `internal/plan` | Select transform per entry using cost/gain heuristic |
-| `internal/store` | Write/read blob chunks, manage SQLite catalog, compress |
-| `internal/runtime` | Orchestrate scan → hash → plan → store; CLI bridge |
+| Package | Responsibility | Constraint (what it must NOT do) |
+|---------|---------------|----------------------------------|
+| `cmd/metarc` | CLI parsing, flag binding, output formatting | No archive logic; delegates to `runtime` |
+| `pkg/marc` | Format spec, Transform interface, stable public types | No `internal/` imports; breaking changes need a new version suffix |
+| `internal/scan` | Walk filesystem, collect `marc.Entry` without analyzing content | No content I/O: metadata only |
+| `internal/analyze` | BLAKE3-256 hashing, QuickSig computation | Read-only: observes and proposes, never modifies data |
+| `internal/plan` | Select transform per entry using cost/gain heuristic | No I/O at all: a pure heuristic that must be willing to choose nothing |
+| `internal/store` | Write/read blob chunks, manage SQLite catalog, compress | Single writer goroutine; SQLite has no concurrent writers |
+| `internal/runtime` | Orchestrate scan → hash → plan → store; CLI bridge | Owns orchestration only; no format or transform knowledge of its own |
 
 ---
 
@@ -357,18 +370,30 @@ type Transform interface {
 
 ### Registered Transforms
 
-| ID | Mode | Applicable | Gain model | CPU model |
-|----|------|-----------|------------|-----------|
-| `go-line-subst/v1` | Lossless, **default** | `.go` files > 0B | `size/10` | `size/1024` |
-| `py-line-subst/v1` | Lossless, **WIP — not registered** | `.py` files > 0B | `size/10` | `size/1024` |
-| `js-line-subst/v1` | Lossless, **WIP — not registered** | `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs` > 0B | `size/10` | `size/1024` |
-| `dedup/v1` | Lossless, **default** | Any file > 0B | `size` | `size/1024` |
-| `json-canonical/v1` | Lossless*, opt-in | `.json` ≤10MB | `size/4` | `size/512` |
-| `license-canonical/v1` | Lossy, opt-in | `LICENSE*` filenames | `size` | `512` |
-| `log-template/v1` | Lossy, opt-in | `*.log`, syslog, 1KB–50MB | `size/3` | `size/256` |
-| `near-dup-delta/v1` | Stub | Never | — | — |
+Listed in `plan.Registry` order, which is the order the chain is tried: the first
+transform that applies and returns `handled=true` wins (§11).
 
-\* json-canonical restores canonical form, not original formatting.
+| # | ID | Mode | Applicable | Gain model | CPU model |
+|---|----|------|-----------|------------|-----------|
+| 1 | `dedup/v1` | Lossless, **default** | Any file > 0B | `size` | `size/1024` |
+| 2 | `passthrough/v1` | Lossless, **default** | Already-compressed extensions (`.png`, `.zip`, `.gz`, …) | `size/50` | `0` |
+| 3 | `go-line-subst/v1` | Lossless, **default** | `.go` files > 0B | `size/10` | `size/1024` |
+| 4 | `license-canonical/v1` | Lossless, **default** | Recognized SPDX licenses by content fingerprint | `size` | `512` |
+| 5 | `log-date-subst/v2` | Lossless, **default** | `*.log`, syslog, 1KB to 50MB | `size/3` | `size/512` |
+| | `py-line-subst/v1` | Lossless, **WIP, not registered** | `.py` files > 0B | `size/10` | `size/1024` |
+| | `js-line-subst/v1` | Lossless, **WIP, not registered** | `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs` > 0B | `size/10` | `size/1024` |
+| | `json-canonical/v1` | Lossy, opt-in | `.json` ≤10MB | `size/4` | `size/512` |
+| | `log-template/v1` | Lossy, opt-in | `*.log`, syslog, 1KB to 50MB | `size/3` | `size/256` |
+| | `near-dup-delta/v1` | Stub | Never | n/a | n/a |
+
+Rows with no number are not in `plan.Registry`: the lossy pair is opt-in (ADR-013), the
+line-subst pair is WIP, and `near-dup-delta/v1` is a gated stub.
+
+`json-canonical/v1` restores a canonical form, not the original formatting: key order and
+whitespace are not preserved. That is why it is lossy and opt-in.
+
+`license-canonical/v1` is lossless and on by default: it stores a Myers diff against the
+embedded canonical text (see below), not the canonical text alone.
 
 **go-line-subst/v1** — line-level token substitution:
 ```
@@ -379,9 +404,17 @@ Reverse: read blob line by line, find \x00 marker, expand from dictionary.
 ```
 Benchmarked at +9.6% per-file compression gain, neutral on solid blocks.
 
-**py-line-subst/v1** — same mechanism as `go-line-subst/v1`, applied to `.py` files with a 139-entry dictionary covering stdlib imports, special-method stubs, common return idioms, typing/dataclass/pytest decorators, and license headers. Indentation-insensitive: leading tabs/spaces are captured as a prefix and re-emitted before the token, so dictionary lines hit regardless of nesting depth. **Implemented but not registered in `plan.Registry`.** Bench runs showed no measurable ratio gain because the dictionary was assembled from intuition rather than from a frequency pass on a real corpus; the package stays in the tree so it can be re-registered once `.claude/doc/py_token.txt` is built and the dict rebuilt from it, or removed once Item 4 of the compression roadmap (per-extension trained zstd dicts) lands.
+**py-line-subst/v1**: the same mechanism applied to `.py` files with a 139-entry
+dictionary, indentation-insensitive so dictionary lines hit at any nesting depth.
+**Implemented but not registered in `plan.Registry`**, because it measured no ratio gain.
 
-**js-line-subst/v1** — same mechanism, ported to `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs` with a 135-entry dictionary. **Implemented but not registered in `plan.Registry`.** Bench runs showed near-zero ratio gain on JS/TS loss corpora because: (a) the dictionary was assembled from intuition rather than from a frequency pass on a real corpus (the goline dict was built from `.claude/doc/go_token.txt`; the equivalent `js_token.txt` was never produced), and (b) JS/TS source has high format/quote-style variance (Prettier vs no-Prettier, single vs double quotes, semi vs no-semi) that breaks exact-line lookup. The transform stays in the tree so it can be re-registered after a corpus-counted dict rebuild, or removed once Item 4 of the compression roadmap (per-extension trained zstd dicts) lands.
+**js-line-subst/v1**: the same mechanism ported to `.js`/`.jsx`/`.ts`/`.tsx`/`.mjs`/`.cjs`
+with a 135-entry dictionary. **Implemented but not registered in `plan.Registry`**, for the
+same reason.
+
+Both dictionaries were hand-curated rather than counted from a real corpus, which is the
+stated cause; see the transform packages and the compression roadmap for the re-activation
+criteria, which are too volatile to duplicate here.
 
 ### Application / Reversal
 
@@ -404,13 +437,20 @@ Apply:   stream file through sink → BLAKE3 → dedup check → compress → wr
 Reverse: open blob by ID → copy bytes to output
 ```
 
-**license-canonical/v1** — license fingerprinting:
+**license-canonical/v1**: license fingerprinting plus a lossless diff.
 ```
 Apply:   read file, normalize whitespace, BLAKE3 → lookup SPDX ID in fingerprints map
-         If found: store SPDX ID as Params, no blob written
-         If not:   ErrNotApplicable → fallback to raw
-Reverse: read Params (SPDX ID) → write canonical license text from embedded texts.go
+         If not found: ErrNotApplicable → fallback to raw
+         If found: Myers-diff the normalized content against the embedded canonical
+                   text (internal/diff/linediff) and store SPDX ID + diff ops +
+                   the exact Leading/Trailing whitespace as Params. No blob written.
+Reverse: read Params → apply the diff to the canonical text from texts.go, then
+         re-attach Leading/Trailing → byte-identical original
 ```
+The diff is what makes this lossless, so the transform is on by default. A file that
+fingerprints to a known SPDX license but carries local edits (a changed copyright line)
+stores only those edits. `Leading`/`Trailing` preserve whitespace that `normalize()`
+trimmed, which is why a LICENSE ending in `\n\n` round-trips exactly.
 
 **log-template/v1** — template extraction:
 ```
@@ -583,32 +623,45 @@ scan.Walk ──(chan Entry)──► seq wrapper ──► seqCh (buffered) │
 - **Parallel hashing**: BLAKE3 is CPU-bound; workers saturate all cores
 - **Sequencer**: Preserves scan order so parent entries always precede children in `entries.id` — required for `parent_id` FK validity and for path reconstruction during read
 - **Single writer**: SQLite does not support concurrent writers; serializing all inserts avoids lock contention
+- **`seqCh` cap 1024**: absorbs the scan burst (a walk enumerates far faster than workers hash) without letting an unbounded queue of entries accumulate
+- **`resultCh` / `orderedCh` cap 256**: bounds in-flight hashed results, which is what keeps peak RSS flat on large trees; a wider buffer would let slow-to-order results pile up behind one straggler
+
+Note that workers compute hashes only. Transform selection and application both happen on
+the writer side (§11), so they run single-threaded even though hashing does not.
 
 ---
 
 ## 11. Planner Heuristic
 
+`internal/plan` holds the Registry, the `Disabled` set and the `Decision` type; the
+selection loop itself lives in the writer, at `internal/store/store.go`
+(`writeFileWithSHA`), because choosing a transform and running it are one pass:
+
 ```go
-// internal/plan/plan.go
-func Decide(ctx, entry, facts) (Transform, Decision) {
-    for _, t := range Registry {
-        if t.Applicable(ctx, entry, facts) {
-            gain, cpu := t.CostEstimate(entry, facts)
-            if gain > cpu {
-                return t, Decision{Applied: true, ...}
-            }
-            return nil, Decision{Applied: false, Reason: "gain <= cpu"}
-        }
-    }
-    return nil, Decision{Reason: "no applicable transform"}
+for _, t := range plan.Registry {
+    if handled { break }                                  // chain is interruptible
+    if plan.Disabled[string(t.ID())] { continue }         // --disable-transform
+    if !t.Applicable(ctx, e, facts) { continue }
+
+    gain, cpu := t.CostEstimate(e, facts)
+    if gain <= cpu { continue }                           // too expensive, try the next
+
+    result, ok, err := t.Apply(ctx, e, facts, f, sink)
+    if err != nil { return err }
+    if ok { handled = true; break }                       // handled=true halts the chain
+    f.Seek(0, io.SeekStart)                               // declined: rewind, try the next
 }
+if !handled { /* write raw */ }
 ```
 
 **Properties:**
-- First-applicable-wins: Registry ordering determines priority
+- First transform that applies *and* handles wins: Registry ordering determines priority
 - Conservative: `gain > cpu` (strictly greater), not `>=`
+- Non-terminal: a transform that is inapplicable, too expensive, or that returns
+  `handled=false` falls through to the next one rather than ending selection. Only
+  `handled=true` stops the chain, and reaching the end means a raw write
 - Every decision logged in `plan_log` for post-hoc analysis via `inspect --plan-log`
-- Heuristics are size-proportional, no I/O in planning phase
+- Heuristics are size-proportional; `Applicable` and `CostEstimate` do no I/O
 
 ---
 
@@ -688,7 +741,9 @@ If an archive was created with `transform-foo/v1` and the current binary doesn't
 During extraction, every resolved path is validated to remain within `destDir` (Zip Slip mitigation). Symlink targets are also validated to not point outside the extraction sandbox.
 
 ### Lossy transforms as opt-in
-`json-canonical`, `license-canonical`, and `log-template` restore a canonical form, not the original bytes. They are not in the default Registry until a mechanism exists to store the original alongside the canonical form. Keeping them opt-in prevents silent data loss for users who don't understand the trade-off.
+`json-canonical` and `log-template` restore a canonical form, not the original bytes. They are not in the default Registry until a mechanism exists to store the original alongside the canonical form. Keeping them opt-in prevents silent data loss for users who don't understand the trade-off.
+
+`license-canonical` is the worked example of that mechanism, and therefore the exception: it stores a Myers diff against the canonical text, reconstructs the original byte for byte, and so ships on by default. Making `json-canonical` lossless the same way is the stated path to promoting it.
 
 ---
 
