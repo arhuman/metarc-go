@@ -31,6 +31,7 @@ type Reader struct {
 	hasSolidBlocks bool             // true if blobs table has block_id column
 	solidCache     map[int64][]byte // offset -> decompressed solid block data
 	solidCacheKeys []int64          // insertion order for LRU eviction
+	soleBlocks     map[int64]bool   // block_id -> the block holds exactly one blob
 	blobBytesSize  int64            // size of the file holding blob bytes: the archive, or the legacy sidecar
 }
 
@@ -170,6 +171,7 @@ func openReaderSingle(marcPath string) (*Reader, error) {
 	}
 
 	r.hasSolidBlocks = detectSolidColumns(db)
+	r.soleBlocks = loadSoleMemberBlocks(db, r.hasSolidBlocks)
 
 	return r, nil
 }
@@ -202,6 +204,7 @@ func openReaderSplit(marcPath string) (*Reader, error) {
 		blobBytesSize: blobInfo.Size(),
 	}
 	r.hasSolidBlocks = detectSolidColumns(db)
+	r.soleBlocks = loadSoleMemberBlocks(db, r.hasSolidBlocks)
 	return r, nil
 }
 
@@ -276,7 +279,9 @@ func (r *Reader) WalkEntries(fn func(relPath string, e EntryRow) error) error {
 
 // OpenBlob returns a reader for the bytes of a blob identified by blobID.
 // If the blob is zstd-compressed, the returned reader transparently decompresses.
-// For solid blocks, the entire block is decompressed and the relevant slice returned.
+// A solid block shared by several blobs is decompressed whole, cached, and the
+// relevant slice returned; a block holding a single blob is streamed instead and
+// never cached, since materializing it would buy no reuse.
 // The caller must close the returned ReadCloser.
 func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 	var offset, clen, ulen int64
@@ -305,6 +310,9 @@ func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 
 	// Handle solid block blobs: decompress the whole block, slice out the blob.
 	if compressed == marc.CompressSolid {
+		if r.soleBlocks[blockID] {
+			return r.streamSoleSolidBlob(blobID, offset, clen, blockOffset, ulen)
+		}
 		return r.openSolidBlob(offset, clen, blockOffset, ulen)
 	}
 
@@ -431,6 +439,39 @@ func (b *boundedBlobReader) Close() error {
 // solidCacheMaxEntries is the maximum number of decompressed solid blocks cached.
 const solidCacheMaxEntries = 4
 
+// streamSoleSolidBlob returns a reader over a solid block that holds exactly one
+// blob, decoding the zstd frame as a stream rather than materializing the block.
+// It never caches: the block has one member, so a cached copy could only ever
+// serve the blob that just consumed it, at the cost of holding it resident until
+// four other blocks evict it. This is what keeps extraction of a large file
+// proportional to the zstd window instead of to the file.
+//
+// blockOffset must be 0: the write path gives a sole-member block one blob and
+// places it at the start of the block. A catalog claiming otherwise is forged,
+// and is rejected rather than streamed from a position the frame does not have.
+func (r *Reader) streamSoleSolidBlob(blobID, chunkOffset, clen, blockOffset, ulen int64) (io.ReadCloser, error) {
+	// Streaming cannot skip forward cheaply, and a nonzero offset here means the
+	// catalog disagrees with the only shape the writer produces.
+	if blockOffset != 0 {
+		return nil, fmt.Errorf("store.OpenBlob: blob %d: sole member of its block at block_offset %d, want 0", blobID, blockOffset)
+	}
+
+	section := io.NewSectionReader(r.arcFile, chunkOffset+chunkHeaderSize, clen)
+
+	// The blob is the whole block here, so its own ulen bounds the frame; the
+	// shared path cannot use it because a block decodes to more than one blob.
+	dec, err := zstd.NewReader(section,
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderLowmem(true),
+		zstd.WithDecoderMaxMemory(blobDecoderMemory(ulen)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store.OpenBlob: zstd reader for sole-member block at %d: %w", chunkOffset, err)
+	}
+
+	return newBoundedBlob(blobID, ulen, &zstdReadCloser{dec: dec}), nil
+}
+
 // openSolidBlob reads a solid block (decompress if not cached) and returns a
 // reader for the slice [blockOffset : blockOffset+ulen].
 func (r *Reader) openSolidBlob(chunkOffset, clen, blockOffset, ulen int64) (io.ReadCloser, error) {
@@ -499,6 +540,42 @@ func detectSolidColumns(db *sql.DB) bool {
 		}
 	}
 	return false
+}
+
+// loadSoleMemberBlocks returns the set of solid block ids that hold exactly one
+// blob. Such a block and its single blob cover the same bytes, so OpenBlob can
+// stream the block instead of decoding and caching it whole.
+//
+// It is read once at open rather than per blob because blobs carries no index
+// on block_id (ADR-018 drops the write-only indexes), so a per-blob COUNT would
+// scan the table for every entry extract touches. The set itself is small: an
+// archive only produces a sole-member block for a file larger than the solid
+// block size, and the kubernetes corpus has three across 267 MB.
+//
+// A failed query yields an empty set, which keeps every blob on the shared
+// cached path: correct, just without the memory saving.
+func loadSoleMemberBlocks(db *sql.DB, hasSolidBlocks bool) map[int64]bool {
+	sole := make(map[int64]bool)
+	if !hasSolidBlocks {
+		return sole
+	}
+	rows, err := db.Query(`SELECT block_id FROM blobs WHERE block_id IS NOT NULL GROUP BY block_id HAVING COUNT(*) = 1`)
+	if err != nil {
+		return sole
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var blockID int64
+		if err := rows.Scan(&blockID); err != nil {
+			return make(map[int64]bool)
+		}
+		sole[blockID] = true
+	}
+	if rows.Err() != nil {
+		return make(map[int64]bool)
+	}
+	return sole
 }
 
 // QuerySolidBlockCount returns the number of distinct solid blocks in the archive.
