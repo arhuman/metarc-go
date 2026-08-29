@@ -3,6 +3,7 @@ package store_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"io"
 	"os"
@@ -412,6 +413,62 @@ func TestVerifyBlob_roundTrip(t *testing.T) {
 				t.Error("VerifyBlob on a nonexistent blob should fail")
 			}
 		})
+	}
+}
+
+// TestVerifyBlob_rejectsShortStoredHash pins the hash-width floor. The
+// comparison is prefix-based, so a catalog hash narrower than StoredSHALen
+// would otherwise "verify" against an arbitrary blob on a short prefix: one
+// byte matches roughly 1 time in 256. Such a catalog must be rejected instead.
+func TestVerifyBlob_rejectsShortStoredHash(t *testing.T) {
+	raw, err := os.ReadFile(buildArchive(t, 0))
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+
+	dir := t.TempDir()
+	splitPath := filepath.Join(dir, "short.marc")
+	if err := os.WriteFile(splitPath, extractCatalogDB(t, raw), 0o644); err != nil {
+		t.Fatalf("write split catalog: %v", err)
+	}
+	if err := os.WriteFile(splitPath+marc.BlobsExt, raw, 0o644); err != nil {
+		t.Fatalf("write blobs sidecar: %v", err)
+	}
+
+	// Truncate every stored hash to one byte, below the StoredSHALen floor.
+	db, err := sql.Open("sqlite", splitPath)
+	if err != nil {
+		t.Fatalf("open catalog: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE blobs SET sha = substr(sha, 1, 1)`); err != nil {
+		_ = db.Close()
+		t.Fatalf("truncate stored hashes: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close catalog: %v", err)
+	}
+
+	r, err := store.OpenReader(splitPath)
+	if err != nil {
+		t.Fatalf("OpenReader: %v", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	ids, err := r.QueryBlobIDs()
+	if err != nil {
+		t.Fatalf("QueryBlobIDs: %v", err)
+	}
+	if len(ids) == 0 {
+		t.Fatal("archive has no blobs")
+	}
+	for _, id := range ids {
+		err := r.VerifyBlob(id)
+		if err == nil {
+			t.Fatalf("VerifyBlob(%d) accepted a 1-byte catalog hash", id)
+		}
+		if !strings.Contains(err.Error(), "want at least") {
+			t.Fatalf("VerifyBlob(%d) failed for the wrong reason: %v", id, err)
+		}
 	}
 }
 

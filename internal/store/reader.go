@@ -588,15 +588,19 @@ func (r *Reader) QueryBlobIDs() ([]int64, error) {
 // meaningful. Any transform Reverse must run after it, never before.
 //
 // The stored hash is truncated to marc.StoredSHALen bytes once an archive is
-// finalized, so only that prefix is compared. It detects corruption, not
-// tampering: an attacker who rewrites a blob can rewrite its catalog hash too.
+// finalized, so only that prefix is compared, and a catalog hash narrower than
+// StoredSHALen is rejected rather than compared on a shorter prefix. It detects
+// corruption, not tampering: an attacker who rewrites a blob can rewrite its
+// catalog hash too.
 func (r *Reader) VerifyBlob(blobID int64) error {
 	var stored []byte
 	if err := r.db.QueryRow(`SELECT sha FROM blobs WHERE id = ?`, blobID).Scan(&stored); err != nil {
 		return fmt.Errorf("store.VerifyBlob: lookup blob %d: %w", blobID, err)
 	}
-	if len(stored) == 0 {
-		return fmt.Errorf("store.VerifyBlob: blob %d: catalog records no hash", blobID)
+	// Enforce a width floor: the comparison below is prefix-based, so a stored
+	// hash of one or two bytes would "verify" on a coin flip. Reject it instead.
+	if len(stored) < marc.StoredSHALen {
+		return fmt.Errorf("store.VerifyBlob: blob %d: catalog hash is %d bytes, want at least %d", blobID, len(stored), marc.StoredSHALen)
 	}
 
 	rc, err := r.OpenBlob(blobID)
