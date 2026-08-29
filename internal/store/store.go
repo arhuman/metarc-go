@@ -58,6 +58,7 @@ type Writer struct {
 	solidAcc        *solidAccumulator // non-nil when solid block compression is enabled
 	solidSize       int64             // solid block size threshold (0 = disabled)
 	zstdCfg         ZstdConfig        // per-chunk-type zstd encoder settings
+	skipPlanLog     bool              // when true, plan_log inserts are skipped entirely
 	// resultCache maps source SHA to a cached params-only transform result so
 	// that identical files (e.g. vendored license files) reuse the same params
 	// record instead of each occupying a separate entry in the archive.
@@ -107,6 +108,20 @@ func WithSolidBlockSize(size int64) Option {
 func WithZstdConfig(cfg ZstdConfig) Option {
 	return func(w *Writer) {
 		w.zstdCfg = cfg
+	}
+}
+
+// WithoutPlanLog suppresses plan_log inserts for this archive.
+//
+// Planner decisions are recorded by default so `marc inspect --plan-log` can
+// read them back. The CLI drops them again at finalize unless --keep-plan-log
+// was given, and this option lets that caller skip the inserts outright instead
+// of writing one row per file entry only to DELETE them all: one INSERT per file
+// saved on the write path. Callers that suppress the log must not expect
+// QueryPlanLog to return anything.
+func WithoutPlanLog() Option {
+	return func(w *Writer) {
+		w.skipPlanLog = true
 	}
 }
 
@@ -644,8 +659,13 @@ func (w *Writer) insertEntryWithBlobs(e marc.Entry, nameID, parentID int64, mode
 	return entryID, w.maybeBatchCommit()
 }
 
-// writePlanLog inserts one plan_log row for the given entry.
+// writePlanLog inserts one plan_log row for the given entry, unless the caller
+// passed WithoutPlanLog, in which case the row would be deleted at finalize and
+// is never inserted.
 func (w *Writer) writePlanLog(entryID int64, d plan.Decision) error {
+	if w.skipPlanLog {
+		return nil
+	}
 	applied := 0
 	if d.Applied {
 		applied = 1
@@ -665,12 +685,13 @@ func (w *Writer) writePlanLog(entryID int64, d plan.Decision) error {
 }
 
 // DeletePlanLog removes all rows from plan_log.
+//
+// Under WithoutPlanLog the rows were never inserted, so this is a cheap sweep of
+// an already-empty table. It stays because it is the finalize-time guarantee that
+// plan_log is empty, and it runs inside the open transaction: forcing a flush
+// first would commit a batch solely to make a DELETE visible.
 func (w *Writer) DeletePlanLog() error {
-	if err := w.flushTx(); err != nil {
-		return fmt.Errorf("store: delete plan_log: flush: %w", err)
-	}
-	_, err := w.tx.Exec(`DELETE FROM plan_log`)
-	if err != nil {
+	if _, err := w.tx.Exec(`DELETE FROM plan_log`); err != nil {
 		return fmt.Errorf("store: delete plan_log: %w", err)
 	}
 	return nil

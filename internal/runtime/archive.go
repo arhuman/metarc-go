@@ -188,6 +188,12 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 
 	opts = append(opts, store.WithZstdConfig(store.ResolveZstdConfig(aopts.ZstdLevels)))
 
+	// The rows would be deleted at finalize anyway, so skip the inserts rather
+	// than writing one per file entry and then DELETEing them all.
+	if !keepPlanLog {
+		opts = append(opts, store.WithoutPlanLog())
+	}
+
 	w, err := store.OpenWriter(marcPath, opts...)
 	if err != nil {
 		return fmt.Errorf("runtime.Archive: %w", err)
