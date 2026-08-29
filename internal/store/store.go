@@ -259,6 +259,17 @@ func (w *Writer) writeAndHash(data []byte) error {
 	return nil
 }
 
+// drainSolid writes every solid block already handed to the compression pool.
+// Any code that is about to claim the next file offset for itself must call it
+// first: solid blocks are compressed in parallel but land in submission order,
+// so a chunk written past them would be recorded at an offset they still own.
+func (w *Writer) drainSolid() error {
+	if w.solidAcc == nil {
+		return nil
+	}
+	return w.solidAcc.drainAll()
+}
+
 // copyAndHash streams r into outFile and through the running hash, holding one
 // fixed buffer rather than the whole payload. The hash covers the same bytes in
 // the same order as writeAndHash would, so the footer checksum is unchanged.
@@ -724,10 +735,10 @@ func (w *Writer) flushTx() error {
 func (w *Writer) Close() error {
 	var errs []error
 
-	// Flush remaining solid block data before committing the transaction,
-	// because flush needs the tx to update blob rows.
+	// Flush and drain remaining solid block data before committing the
+	// transaction, because the completion stage needs the tx to update blob rows.
 	if w.solidAcc != nil && w.tx != nil {
-		if err := w.solidAcc.flush(); err != nil {
+		if err := w.solidAcc.finish(); err != nil {
 			errs = append(errs, fmt.Errorf("solid flush: %w", err))
 		}
 	}

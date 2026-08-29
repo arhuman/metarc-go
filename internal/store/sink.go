@@ -109,7 +109,8 @@ func (s *blobSink) streamApplies(size int64) bool {
 // writeStreaming routes an oversized blob into its own streamed solid block.
 // It flushes any block in flight first, because the streamed block has to stand
 // alone, and resolves dedup up front: the hash is already known, so a duplicate
-// costs neither a read nor an encode.
+// costs neither a read nor an encode. addOversizedStream drains the flushed
+// blocks itself, since it writes at whatever offset they leave.
 func (s *blobSink) writeStreaming(r io.Reader, sha [32]byte, ulen int64) (marc.BlobID, error) {
 	if err := checkBlobPayloadSize(s.relPath, ulen); err != nil {
 		return 0, fmt.Errorf("blobSink.writeStreaming: %w", err)
@@ -141,6 +142,12 @@ func (s *blobSink) writeDataRaw(data []byte, sha [32]byte) (marc.BlobID, error) 
 
 	if len(data) > math.MaxUint32 {
 		return 0, fmt.Errorf("blobSink.writeDataRaw: blob exceeds max chunk size (4 GB)")
+	}
+
+	// This chunk takes the next offset in the file, so every solid block
+	// submitted before it has to be written first or the two would swap places.
+	if err := s.w.drainSolid(); err != nil {
+		return 0, fmt.Errorf("blobSink.writeDataRaw: %w", err)
 	}
 
 	chunkOffset := s.w.blobOff
@@ -222,6 +229,12 @@ func (s *blobSink) writeData(data []byte, sha [32]byte) (marc.BlobID, error) {
 
 	if len(payload) > math.MaxUint32 {
 		return 0, fmt.Errorf("blobSink.writeData: blob exceeds max chunk size (4 GB)")
+	}
+
+	// This chunk takes the next offset in the file, so every solid block
+	// submitted before it has to be written first or the two would swap places.
+	if err := s.w.drainSolid(); err != nil {
+		return 0, fmt.Errorf("blobSink.writeData: %w", err)
 	}
 
 	// Record the chunk header offset (where the blob chunk starts).

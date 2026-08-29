@@ -6,6 +6,8 @@ import (
 	"io"
 	"math"
 	"os"
+	"runtime"
+	"sync"
 
 	"github.com/arhuman/metarc-go/pkg/marc"
 	"github.com/klauspost/compress/zstd"
@@ -16,19 +18,63 @@ import (
 // frames a corpus with many rare extensions can produce.
 const DefaultMinSolidBlockSize = 1 << 20
 
+// solidCompressWorkers is the number of goroutines that compress solid blocks
+// in parallel, and therefore also the number of blocks in flight: peak
+// in-flight memory is this many block buffers plus their compressed results.
+//
+// It is a package var so tests can pin it. The cap is 2 because a level-11
+// encoder with a 32 MiB window holds about 104 MB of match tables, and a third
+// worker buys no wall time on source corpora: the blocks of a 263 MB tree
+// compress in 2.5 s in total, which two encoders already cover.
+var solidCompressWorkers = min(2, runtime.NumCPU())
+
 // solidAccumulator groups multiple raw blobs into single zstd frames (solid blocks)
 // to exploit cross-file redundancy before the compressor.
+//
+// Compression runs on a pool of worker goroutines; writing and cataloguing do
+// not. The writer goroutine that calls addBlob owns w.blobOff, w.fileHasher and
+// w.tx, all three strictly sequential, so completed blocks are written back on
+// that goroutine in block-id order.
 type solidAccumulator struct {
 	w            *Writer
 	maxBlockSize int64
 	minBlockSize int64         // below this, an extension change does not flush
-	buf          []byte        // concatenated raw blob data
-	pending      []pendingBlob // blobs in current block
-	blockCounter int64         // incrementing block ID
+	buf          []byte        // concatenated raw blob data for the block in flight
+	pending      []pendingBlob // blobs in the block in flight
+	blockCounter int64         // next block ID to assign
 	currentExt   string        // file extension shared by blobs in the current block
 	extInit      bool          // currentExt has been set at least once
-	enc          *zstd.Encoder // built on first use, reused for every block
-	encDirty     bool          // enc was Reset onto a stream and needs rebinding before EncodeAll
+	streamEnc    *zstd.Encoder // encoder reserved for the streamed oversized path
+
+	jobs    chan solidJob    // submitted blocks
+	results chan solidResult // compressed blocks, arriving out of order
+	wg      sync.WaitGroup
+	workers int // pool size, also the in-flight cap
+
+	inFlight  int                   // blocks submitted but not yet written
+	nextBlock int64                 // block ID the completion stage writes next
+	done      map[int64]solidResult // completed blocks waiting for their turn
+	freeBufs  [][]byte              // block buffers returned after compression
+	err       error                 // first worker or completion error, sticky
+}
+
+// solidJob is one block handed to a compression worker. The worker owns buf for
+// the duration: the accumulator has given up that backing array and starts the
+// next block on another one.
+type solidJob struct {
+	blockID int64
+	buf     []byte
+	pending []pendingBlob
+}
+
+// solidResult is a compressed block awaiting its turn to be written. raw is the
+// job's input buffer, handed back so the accumulator can reuse it.
+type solidResult struct {
+	blockID    int64
+	compressed []byte
+	raw        []byte
+	pending    []pendingBlob
+	err        error
 }
 
 // setExtension declares the extension of blobs that are about to be added.
@@ -84,6 +130,9 @@ func solidWindowFor(blockSize int64) int {
 // addBlob appends raw blob data to the current solid block. If the block would
 // exceed maxBlockSize, it is flushed first. Returns the new blob's BlobID.
 func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byte) (marc.BlobID, error) {
+	if sa.err != nil {
+		return 0, sa.err
+	}
 	dataLen := int64(len(data))
 
 	// Flush current block if adding this blob would exceed the limit.
@@ -97,21 +146,11 @@ func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byt
 	// standalone solid blocks to avoid unbounded buffer growth.
 	if dataLen > sa.maxBlockSize && len(sa.buf) == 0 {
 		sa.buf = append(sa.buf, data...)
-		// Insert blob row, then flush immediately as a single-blob block.
 		blockOffset := int64(0)
-		var sourceSHAParam any
-		zeroSHA := [32]byte{}
-		if sourceSHA != zeroSHA {
-			sourceSHAParam = sourceSHA[:]
-		}
-		res, err := sa.w.tx.Exec(
-			`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			sha[:], sourceSHAParam, int64(-1), int64(0), dataLen, marc.CompressSolid, sa.blockCounter, blockOffset,
-		)
+		rowID, err := sa.insertBlobRow(sha, sourceSHA, -1, 0, dataLen, sa.blockCounter, blockOffset)
 		if err != nil {
 			return 0, fmt.Errorf("solidAccumulator.addBlob: insert oversized blob: %w", err)
 		}
-		rowID, _ := res.LastInsertId()
 		sa.pending = append(sa.pending, pendingBlob{
 			rowID:       rowID,
 			blockOffset: blockOffset,
@@ -126,20 +165,12 @@ func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byt
 	blockOffset := int64(len(sa.buf))
 	sa.buf = append(sa.buf, data...)
 
-	// Insert blob row with placeholder offset/clen; will be updated on flush.
-	var sourceSHAParam2 any
-	zeroSHA2 := [32]byte{}
-	if sourceSHA != zeroSHA2 {
-		sourceSHAParam2 = sourceSHA[:]
-	}
-	res, err := sa.w.tx.Exec(
-		`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		sha[:], sourceSHAParam2, int64(-1), int64(0), dataLen, marc.CompressSolid, sa.blockCounter, blockOffset,
-	)
+	// Insert the blob row with placeholder offset/clen; the completion stage
+	// fills them in once the block it belongs to has been written.
+	rowID, err := sa.insertBlobRow(sha, sourceSHA, -1, 0, dataLen, sa.blockCounter, blockOffset)
 	if err != nil {
 		return 0, fmt.Errorf("solidAccumulator.addBlob: insert blob: %w", err)
 	}
-	rowID, _ := res.LastInsertId()
 
 	sa.pending = append(sa.pending, pendingBlob{
 		rowID:       rowID,
@@ -148,6 +179,25 @@ func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byt
 	})
 
 	return marc.BlobID(rowID), nil
+}
+
+// insertBlobRow inserts one solid-block blob row and returns its rowid. It runs
+// on the writer goroutine, the only owner of w.tx.
+func (sa *solidAccumulator) insertBlobRow(sha, sourceSHA [32]byte, offset, clen, ulen, blockID, blockOffset int64) (int64, error) {
+	var sourceSHAParam any
+	zeroSHA := [32]byte{}
+	if sourceSHA != zeroSHA {
+		sourceSHAParam = sourceSHA[:]
+	}
+	res, err := sa.w.tx.Exec(
+		`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sha[:], sourceSHAParam, offset, clen, ulen, marc.CompressSolid, blockID, blockOffset,
+	)
+	if err != nil {
+		return 0, err
+	}
+	rowID, _ := res.LastInsertId()
+	return rowID, nil
 }
 
 // addOversizedStream writes a blob larger than maxBlockSize as its own solid
@@ -163,7 +213,12 @@ func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byt
 // The spool is the price of the chunk header: [type][len][payload] needs the
 // compressed length before the payload, and streaming only learns it at the end.
 func (sa *solidAccumulator) addOversizedStream(r io.Reader, ulen int64, sha [32]byte, sourceSHA [32]byte) (marc.BlobID, error) {
-	if err := sa.ensureEncoder(); err != nil {
+	// This block writes itself, so every earlier block has to be in the file
+	// already: it takes its offset and its block id from where they end.
+	if err := sa.drainAll(); err != nil {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: drain: %w", err)
+	}
+	if err := sa.ensureStreamEncoder(); err != nil {
 		return 0, err
 	}
 
@@ -177,17 +232,16 @@ func (sa *solidAccumulator) addOversizedStream(r io.Reader, ulen int64, sha [32]
 		_ = os.Remove(spoolPath)
 	}()
 
-	sa.enc.Reset(spool)
-	if _, err := io.Copy(sa.enc, r); err != nil {
-		_ = sa.enc.Close()
+	sa.streamEnc.Reset(spool)
+	if _, err := io.Copy(sa.streamEnc, r); err != nil {
+		_ = sa.streamEnc.Close()
 		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: encode: %w", err)
 	}
-	if err := sa.enc.Close(); err != nil {
+	if err := sa.streamEnc.Close(); err != nil {
 		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: close encoder: %w", err)
 	}
-	// Close finishes the frame but leaves the encoder unusable until Reset;
-	// flush() resets it to nil-writer mode before its next EncodeAll.
-	sa.encDirty = true
+	// Close finished the frame and left the encoder bound to the spool, so it
+	// has to be rebound before the next stream; Reset below does that.
 
 	clen, err := spool.Seek(0, io.SeekCurrent)
 	if err != nil {
@@ -212,28 +266,19 @@ func (sa *solidAccumulator) addOversizedStream(r io.Reader, ulen int64, sha [32]
 	}
 	sa.w.blobOff += int64(len(chunkHeader)) + clen
 
-	var sourceSHAParam any
-	zeroSHA := [32]byte{}
-	if sourceSHA != zeroSHA {
-		sourceSHAParam = sourceSHA[:]
-	}
-	res, err := sa.w.tx.Exec(
-		`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		sha[:], sourceSHAParam, chunkOffset, clen, ulen, marc.CompressSolid, sa.blockCounter, int64(0),
-	)
+	rowID, err := sa.insertBlobRow(sha, sourceSHA, chunkOffset, clen, ulen, sa.blockCounter, 0)
 	if err != nil {
 		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: insert blob: %w", err)
 	}
-	rowID, _ := res.LastInsertId()
 	sa.blockCounter++
+	sa.nextBlock = sa.blockCounter
 	return marc.BlobID(rowID), nil
 }
 
-// ensureEncoder builds the shared solid encoder if it does not exist yet.
-func (sa *solidAccumulator) ensureEncoder() error {
-	if sa.enc != nil {
-		return nil
-	}
+// newSolidEncoder builds one solid-block encoder. Every worker and the streamed
+// path share these settings, since a different level or window would change the
+// bytes a block compresses to.
+func (sa *solidAccumulator) newSolidEncoder() (*zstd.Encoder, error) {
 	window := sa.w.zstdCfg.WindowSize
 	if window == 0 {
 		window = solidWindowFor(sa.maxBlockSize)
@@ -244,78 +289,237 @@ func (sa *solidAccumulator) ensureEncoder() error {
 		zstd.WithWindowSize(window),
 	)
 	if err != nil {
-		return fmt.Errorf("solidAccumulator: create encoder: %w", err)
+		return nil, fmt.Errorf("solidAccumulator: create encoder: %w", err)
 	}
-	sa.enc = enc
+	return enc, nil
+}
+
+// ensureStreamEncoder builds the encoder the streamed oversized path binds to
+// its spool. It is separate from the workers' encoders because Reset onto a
+// writer leaves an encoder unusable for EncodeAll.
+func (sa *solidAccumulator) ensureStreamEncoder() error {
+	if sa.streamEnc != nil {
+		return nil
+	}
+	enc, err := sa.newSolidEncoder()
+	if err != nil {
+		return err
+	}
+	sa.streamEnc = enc
 	return nil
 }
 
-// flush compresses the accumulated buffer as one zstd frame, writes it as a
-// solid block chunk, and updates all pending blob rows with the final offset.
+// startWorkers launches the compression pool on first use. Each worker keeps
+// its own encoder: at level 11 the match tables are sized from the window, so
+// rebuilding one per block would dominate the cost of compressing it.
+func (sa *solidAccumulator) startWorkers() error {
+	if sa.jobs != nil {
+		return nil
+	}
+	n := sa.workers
+	if n <= 0 {
+		n = solidCompressWorkers
+	}
+	if n < 1 {
+		n = 1
+	}
+	sa.workers = n
+	sa.done = make(map[int64]solidResult, n)
+	sa.jobs = make(chan solidJob, n)
+	sa.results = make(chan solidResult, n)
+
+	for range n {
+		sa.wg.Add(1)
+		go sa.compressLoop()
+	}
+	return nil
+}
+
+// compressLoop is one compression worker. Its encoder is built on the first job
+// and kept for every later one: at level 11 with a 32 MiB window the match
+// tables cost about 100 MB to allocate, so a worker that never runs must not
+// pay for one and a worker that runs must not pay twice.
+func (sa *solidAccumulator) compressLoop() {
+	defer sa.wg.Done()
+	var enc *zstd.Encoder
+	defer func() {
+		if enc != nil {
+			_ = enc.Close()
+		}
+	}()
+
+	for job := range sa.jobs {
+		res := solidResult{blockID: job.blockID, raw: job.buf, pending: job.pending}
+		if enc == nil {
+			var err error
+			if enc, err = sa.newSolidEncoder(); err != nil {
+				res.err = err
+				sa.results <- res
+				return
+			}
+		}
+		res.compressed = enc.EncodeAll(job.buf, nil)
+		sa.results <- res
+	}
+}
+
+// flush closes the block in flight by handing it to a compression worker. It
+// writes nothing: the block lands in the file later, in submission order, when
+// a drain reaches it.
 func (sa *solidAccumulator) flush() error {
+	if sa.err != nil {
+		return sa.err
+	}
 	if len(sa.buf) == 0 {
 		return nil
 	}
-
-	// Compress the entire concatenated buffer as one zstd frame at the
-	// writer-configured solid-block level. The encoder is built once and
-	// reused: at level 11 its match tables are sized from the window, so
-	// rebuilding one per block would dominate the cost of flushing.
-	if err := sa.ensureEncoder(); err != nil {
+	if err := sa.startWorkers(); err != nil {
 		return fmt.Errorf("solidAccumulator.flush: %w", err)
 	}
-	// A streamed block left the encoder bound to its spool and closed;
-	// EncodeAll needs it back in the unbound state NewWriter(nil) gives.
-	if sa.encDirty {
-		sa.enc.Reset(nil)
-		sa.encDirty = false
-	}
-	compressed := sa.enc.EncodeAll(sa.buf, nil)
 
-	// Record the chunk header offset.
+	// The cap on blocks in flight is what bounds memory: draining below it
+	// before submitting keeps at most workers block buffers resident.
+	if err := sa.drainUntil(sa.workers); err != nil {
+		return fmt.Errorf("solidAccumulator.flush: %w", err)
+	}
+
+	job := solidJob{blockID: sa.blockCounter, buf: sa.buf, pending: sa.pending}
+	sa.blockCounter++
+
+	for {
+		select {
+		case sa.jobs <- job:
+			sa.inFlight++
+			// The worker owns job.buf and job.pending now, so the next block
+			// has to start on different backing arrays.
+			sa.buf = sa.takeFreeBuf()
+			sa.pending = make([]pendingBlob, 0, len(job.pending))
+			return nil
+		case res := <-sa.results:
+			if err := sa.accept(res); err != nil {
+				return fmt.Errorf("solidAccumulator.flush: %w", err)
+			}
+		}
+	}
+}
+
+// takeFreeBuf returns a recycled block buffer, or nil to let append allocate.
+// The pool is capped at the in-flight bound, so it holds at most workers buffers.
+func (sa *solidAccumulator) takeFreeBuf() []byte {
+	if n := len(sa.freeBufs); n > 0 {
+		buf := sa.freeBufs[n-1]
+		sa.freeBufs = sa.freeBufs[:n-1]
+		return buf[:0]
+	}
+	return nil
+}
+
+// accept records a completed block and writes every block whose turn has come.
+func (sa *solidAccumulator) accept(res solidResult) error {
+	sa.inFlight--
+	if res.err != nil {
+		sa.fail(res.err)
+		return res.err
+	}
+	sa.done[res.blockID] = res
+	for {
+		next, ok := sa.done[sa.nextBlock]
+		if !ok {
+			return nil
+		}
+		delete(sa.done, sa.nextBlock)
+		sa.nextBlock++
+		if err := sa.writeBlock(next); err != nil {
+			sa.fail(err)
+			return err
+		}
+	}
+}
+
+// writeBlock appends one compressed block to the archive and points its blob
+// rows at the chunk. It must run on the writer goroutine: w.blobOff and
+// w.fileHasher advance together in file order, and w.tx has no concurrency.
+func (sa *solidAccumulator) writeBlock(res solidResult) error {
+	if len(res.compressed) > math.MaxUint32 {
+		return fmt.Errorf("solidAccumulator: solid block exceeds max chunk size (4 GB)")
+	}
+
 	chunkOffset := sa.w.blobOff
-
-	if len(compressed) > math.MaxUint32 {
-		return fmt.Errorf("solidAccumulator.flush: solid block exceeds max chunk size (4 GB)")
-	}
-
-	// Write chunk: [0x03][Len uint32 BE][compressed payload]
 	var chunkHeader [5]byte
 	chunkHeader[0] = marc.ChunkTypeSolidBlock
-	binary.BigEndian.PutUint32(chunkHeader[1:5], uint32(len(compressed)))
+	binary.BigEndian.PutUint32(chunkHeader[1:5], uint32(len(res.compressed)))
 
 	if err := sa.w.writeAndHash(chunkHeader[:]); err != nil {
-		return fmt.Errorf("solidAccumulator.flush: write chunk header: %w", err)
+		return fmt.Errorf("solidAccumulator: write chunk header: %w", err)
 	}
-	if err := sa.w.writeAndHash(compressed); err != nil {
-		return fmt.Errorf("solidAccumulator.flush: write chunk payload: %w", err)
+	if err := sa.w.writeAndHash(res.compressed); err != nil {
+		return fmt.Errorf("solidAccumulator: write chunk payload: %w", err)
 	}
 
-	clen := int64(len(compressed))
+	clen := int64(len(res.compressed))
 	sa.w.blobOff += int64(len(chunkHeader)) + clen
 
-	// Update all pending blob rows with the actual chunk offset and compressed length.
-	for _, p := range sa.pending {
+	for _, p := range res.pending {
 		if _, err := sa.w.tx.Exec(
 			`UPDATE blobs SET offset = ?, clen = ? WHERE id = ?`,
 			chunkOffset, clen, p.rowID,
 		); err != nil {
-			return fmt.Errorf("solidAccumulator.flush: update blob %d: %w", p.rowID, err)
+			return fmt.Errorf("solidAccumulator: update blob %d: %w", p.rowID, err)
 		}
 	}
 
-	sa.blockCounter++
-	sa.buf = sa.buf[:0]
-	sa.pending = sa.pending[:0]
-
+	if res.raw != nil && len(sa.freeBufs) < sa.workers {
+		sa.freeBufs = append(sa.freeBufs, res.raw)
+	}
 	return nil
 }
 
-// close releases the cached encoder. Safe to call on an accumulator that
-// never flushed.
+// drainUntil waits until fewer than n blocks are in flight, writing each block
+// as its turn comes. It runs on the writer goroutine.
+func (sa *solidAccumulator) drainUntil(n int) error {
+	if sa.err != nil {
+		return sa.err
+	}
+	for sa.inFlight >= n {
+		if err := sa.accept(<-sa.results); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// drainAll waits for every submitted block to be written and catalogued.
+func (sa *solidAccumulator) drainAll() error {
+	return sa.drainUntil(1)
+}
+
+// fail records the first error. Every later operation reports it rather than
+// writing a block behind the hole the failed one left.
+func (sa *solidAccumulator) fail(err error) {
+	if sa.err == nil {
+		sa.err = err
+	}
+}
+
+// finish submits the block in flight and drains every submitted block, so all
+// solid data is in the archive and catalogued before the transaction commits.
+func (sa *solidAccumulator) finish() error {
+	if err := sa.flush(); err != nil {
+		return err
+	}
+	return sa.drainAll()
+}
+
+// close releases the compression pool and its encoders. Safe to call on an
+// accumulator that never flushed.
 func (sa *solidAccumulator) close() {
-	if sa.enc != nil {
-		_ = sa.enc.Close()
-		sa.enc = nil
+	if sa.jobs != nil {
+		close(sa.jobs)
+		sa.wg.Wait()
+		sa.jobs = nil
+	}
+	if sa.streamEnc != nil {
+		_ = sa.streamEnc.Close()
+		sa.streamEnc = nil
 	}
 }
