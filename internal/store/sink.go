@@ -211,7 +211,7 @@ func (s *blobSink) writeData(data []byte, sha [32]byte) (marc.BlobID, error) {
 // then falls back to sha (blob content hash).
 func (s *blobSink) Reuse(sha [32]byte) (marc.BlobID, bool) {
 	var id int64
-	// Check source_sha first — catches duplicates before any transform has run.
+	// Check source_sha first: catches duplicates before any transform has run.
 	err := s.w.tx.QueryRow(`SELECT id FROM blobs WHERE source_sha = ?`, sha[:]).Scan(&id)
 	if err == nil {
 		return marc.BlobID(id), true

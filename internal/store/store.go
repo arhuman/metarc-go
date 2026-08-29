@@ -381,6 +381,53 @@ func (w *Writer) writeFile(ctx context.Context, e marc.Entry, nameID, parentID i
 	return w.writeFileWithSHA(ctx, e, nameID, parentID, mode, mtimeNs, uid, gid, [32]byte{})
 }
 
+// lazyFile is an io.ReadSeeker that opens its path on first use. Transforms
+// receive it in place of an *os.File so that a transform which decides from
+// Facts alone (dedup/v1, which matches on the pre-computed hash) costs no open.
+//
+// Close is safe to call when the file was never opened, so callers can defer it
+// unconditionally. Not safe for concurrent use: one writer goroutine owns it.
+type lazyFile struct {
+	path string
+	f    *os.File
+}
+
+func (l *lazyFile) open() error {
+	if l.f != nil {
+		return nil
+	}
+	f, err := os.Open(l.path)
+	if err != nil {
+		return fmt.Errorf("store: open file %s: %w", l.path, err)
+	}
+	l.f = f
+	return nil
+}
+
+func (l *lazyFile) Read(p []byte) (int, error) {
+	if err := l.open(); err != nil {
+		return 0, err
+	}
+	return l.f.Read(p)
+}
+
+// Seek opens the file even when the offset resolves to 0: a transform that
+// seeks before reading is entitled to a real handle, and reporting success
+// without one would hide a missing or unreadable file until the next Read.
+func (l *lazyFile) Seek(offset int64, whence int) (int64, error) {
+	if err := l.open(); err != nil {
+		return 0, err
+	}
+	return l.f.Seek(offset, whence)
+}
+
+func (l *lazyFile) Close() error {
+	if l.f == nil {
+		return nil
+	}
+	return l.f.Close()
+}
+
 // writeFileWithSHA writes a file entry, optionally using a pre-computed BLAKE3 hash.
 // It iterates the transform registry, calling Apply on each applicable transform
 // until one returns handled=true. If none handles it, the file is written raw.
@@ -412,13 +459,6 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 	hasSHA := sha != zeroSHA
 	facts := marc.Facts{Size: e.Info.Size(), SHA: sha}
 
-	// Open the source file.
-	f, err := os.Open(e.Path)
-	if err != nil {
-		return fmt.Errorf("store: open file %s: %w", e.Path, err)
-	}
-	defer func() { _ = f.Close() }()
-
 	var transformID string
 	var blobIDs []marc.BlobID
 	var params []byte
@@ -442,6 +482,13 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 			}
 		}
 	}
+
+	// The source is opened on the first read, not here. dedup/v1 runs first and
+	// answers from the pre-computed hash alone, so on a duplicate-heavy tree the
+	// open is pure overhead: one syscall per duplicate, plus the inode and page
+	// cache traffic behind it.
+	f := &lazyFile{path: e.Path}
+	defer func() { _ = f.Close() }()
 
 	for _, t := range plan.Registry {
 		if handled {
@@ -510,6 +557,7 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 			decision = plan.Decision{Reason: "no applicable transform"}
 		}
 		var id marc.BlobID
+		var err error
 		if hasSHA {
 			id, err = sink.WriteWithSHA(ctx, f, sha)
 		} else {
