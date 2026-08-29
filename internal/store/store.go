@@ -3,6 +3,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -320,40 +321,36 @@ func (w *Writer) parentID(relPath string) int64 {
 // The SHA is used for dedup lookup, skipping redundant hashing when analyze
 // workers have already computed it. Must be called from a single goroutine.
 func (w *Writer) WriteEntryWithSHA(ctx context.Context, e marc.Entry, sha [32]byte) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
+	return w.writeEntry(ctx, e, sha, nil)
+}
 
-	name := filepath.Base(e.RelPath)
-	if e.RelPath == "." {
-		name = "."
+// WriteEntryContent writes a single entry whose content the caller already read.
+//
+// data must be the complete content of e and sha its BLAKE3-256; when data is
+// non-nil the store never reopens e.Path, so a stale buffer would be archived
+// silently. data is not retained after the call returns, so the caller may
+// reuse or drop it immediately. A nil data behaves exactly like
+// WriteEntryWithSHA, including for dirs and symlinks, which carry no content.
+// Must be called from a single goroutine, like the other Write methods.
+func (w *Writer) WriteEntryContent(ctx context.Context, e marc.Entry, sha [32]byte, data []byte) error {
+	var src io.ReadSeeker
+	if data != nil {
+		src = bytes.NewReader(data)
 	}
-
-	nameID, err := w.internName(name)
-	if err != nil {
-		return err
-	}
-
-	parentID := w.parentID(e.RelPath)
-	mode := uint32(e.Info.Mode())
-	mtimeNs := e.Info.ModTime().UnixNano()
-	uid, gid := ownerIDs(e.Info)
-
-	if e.Info.Mode()&fs.ModeSymlink != 0 {
-		return w.writeSymlink(e, nameID, parentID, mode, mtimeNs, uid, gid)
-	}
-	if e.Info.IsDir() {
-		return w.writeDir(e, nameID, parentID, mode, mtimeNs, uid, gid)
-	}
-	return w.writeFileWithSHA(ctx, e, nameID, parentID, mode, mtimeNs, uid, gid, sha)
+	return w.writeEntry(ctx, e, sha, src)
 }
 
 // WriteEntry writes a single entry (file or directory) to the archive.
 // For files, it reads content from disk and writes blob chunks to the archive.
 // Must be called from a single goroutine.
 func (w *Writer) WriteEntry(ctx context.Context, e marc.Entry) error {
+	return w.writeEntry(ctx, e, [32]byte{}, nil)
+}
+
+// writeEntry resolves the name, parent, mode, mtime and owner of an entry and
+// dispatches on its kind. A zero sha means "not pre-computed"; a non-nil src
+// supplies the file content in place of opening e.Path.
+func (w *Writer) writeEntry(ctx context.Context, e marc.Entry, sha [32]byte, src io.ReadSeeker) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -381,7 +378,7 @@ func (w *Writer) WriteEntry(ctx context.Context, e marc.Entry) error {
 	if e.Info.IsDir() {
 		return w.writeDir(e, nameID, parentID, mode, mtimeNs, uid, gid)
 	}
-	return w.writeFile(ctx, e, nameID, parentID, mode, mtimeNs, uid, gid)
+	return w.writeFileWithSHA(ctx, e, nameID, parentID, mode, mtimeNs, uid, gid, sha, src)
 }
 
 func (w *Writer) writeDir(e marc.Entry, nameID, parentID int64, mode uint32, mtimeNs int64, uid, gid uint32) error {
@@ -414,10 +411,6 @@ func (w *Writer) writeSymlink(e marc.Entry, nameID, parentID int64, mode uint32,
 	w.entryN++
 
 	return w.maybeBatchCommit()
-}
-
-func (w *Writer) writeFile(ctx context.Context, e marc.Entry, nameID, parentID int64, mode uint32, mtimeNs int64, uid, gid uint32) error {
-	return w.writeFileWithSHA(ctx, e, nameID, parentID, mode, mtimeNs, uid, gid, [32]byte{})
 }
 
 // lazyFile is an io.ReadSeeker that opens its path on first use. Transforms
@@ -470,7 +463,8 @@ func (l *lazyFile) Close() error {
 // writeFileWithSHA writes a file entry, optionally using a pre-computed BLAKE3 hash.
 // It iterates the transform registry, calling Apply on each applicable transform
 // until one returns handled=true. If none handles it, the file is written raw.
-func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, parentID int64, mode uint32, mtimeNs int64, uid, gid uint32, sha [32]byte) error {
+// A non-nil src supplies the content, so e.Path is never opened.
+func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, parentID int64, mode uint32, mtimeNs int64, uid, gid uint32, sha [32]byte, src io.ReadSeeker) error {
 	// Align solid blocks on extension boundaries: archive.go pre-sorts files by
 	// extension, so a flush-on-change rule keeps each block extension-pure and
 	// preserves cross-file redundancy inside one zstd context.
@@ -527,8 +521,12 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 	// answers from the pre-computed hash alone, so on a duplicate-heavy tree the
 	// open is pure overhead: one syscall per duplicate, plus the inode and page
 	// cache traffic behind it.
-	f := &lazyFile{path: e.Path}
-	defer func() { _ = f.Close() }()
+	lf := &lazyFile{path: e.Path}
+	defer func() { _ = lf.Close() }()
+	var f io.ReadSeeker = lf
+	if src != nil {
+		f = src
+	}
 
 	for _, t := range plan.Registry {
 		if handled {

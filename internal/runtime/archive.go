@@ -24,9 +24,23 @@ import (
 type AnalyzedEntry struct {
 	Entry marc.Entry
 	SHA   [32]byte // BLAKE3-256, zero for dirs/empty files
+	Data  []byte   // file content when the hasher read it inline, nil otherwise
 	Seq   int      // original scan order, for re-ordering
 	Err   error
+	cost  int64 // in-flight budget charge, released by the writer
 }
+
+// inlineFileLimit is the largest file the analyze workers read into memory so
+// the writer does not reopen it. A var, not a const, so tests can shrink it.
+var inlineFileLimit int64 = 1 << 20
+
+// inFlightBudget bounds the bytes held between the sequencer and the writer.
+// It caps both the inlined content and, through the per-entry overhead in
+// entryCost, the number of entries buffered by the reorder stage.
+var inFlightBudget int64 = 64 << 20
+
+// entryCostOverhead is charged per in-flight entry on top of its inlined bytes.
+const entryCostOverhead = 4096
 
 // DictMode selects the dictionary compression strategy.
 const (
@@ -213,30 +227,132 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 	return runArchivePipeline(ctx, cancel, w, entries, numWorkers, keepPlanLog)
 }
 
+// inlineSize reports the byte count the analyze workers will read into memory
+// for this entry, or 0 when it takes the streaming path.
+func inlineSize(e marc.Entry) int64 {
+	if e.Info.IsDir() || e.Info.Mode()&fs.ModeSymlink != 0 {
+		return 0
+	}
+	size := e.Info.Size()
+	if size <= 0 || size > inlineFileLimit {
+		return 0
+	}
+	return size
+}
+
+// entryCost is the in-flight budget charge for one entry: its inlined bytes
+// plus a fixed overhead that bounds how many entries can be buffered at once.
+func entryCost(e marc.Entry) int64 {
+	return entryCostOverhead + inlineSize(e)
+}
+
+// budget bounds the bytes in flight between the sequencer and the writer.
+//
+// A single acquirer (the sequencer) and a single releaser (the writer) mean a
+// missed notify cannot lose a wakeup: the only waiter re-tests used under the
+// lock after every notify, and the writer always notifies after releasing.
+type budget struct {
+	mu     sync.Mutex
+	used   int64
+	limit  int64
+	notify chan struct{}
+}
+
+func newBudget(limit int64) *budget {
+	return &budget{limit: limit, notify: make(chan struct{}, 1)}
+}
+
+func (b *budget) acquire(ctx context.Context, n int64) error {
+	for {
+		b.mu.Lock()
+		if b.used+n <= b.limit {
+			b.used += n
+			b.mu.Unlock()
+			return nil
+		}
+		b.mu.Unlock()
+		select {
+		case <-b.notify:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (b *budget) release(n int64) {
+	b.mu.Lock()
+	b.used -= n
+	b.mu.Unlock()
+	select {
+	case b.notify <- struct{}{}:
+	default:
+	}
+}
+
 // runArchivePipeline consumes entries from the scan channel, hashes files in
-// parallel using numWorkers goroutines, re-orders results to preserve scan
-// order, and writes them through the store.Writer. On success, it optionally
-// clears the plan_log table.
+// parallel using numWorkers goroutines, re-orders results to preserve the write
+// order, and writes them through the store.Writer. Hashing and compression
+// overlap: the writer consumes results as they arrive instead of waiting for
+// the whole tree to be analyzed. On success, it optionally clears the plan_log
+// table.
 func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store.Writer, entries <-chan marc.Entry, numWorkers int, keepPlanLog bool) error {
+	// A single entry must always fit, or the sequencer would wait on a budget
+	// only its own entry could free.
+	limit := inFlightBudget
+	if minLimit := inlineFileLimit + entryCostOverhead; limit < minLimit {
+		limit = minLimit
+	}
+
+	// Directories must be written first (in scan order) so that parent
+	// references exist when child entries are inserted. Only metadata is held
+	// here; content is read later, inside the budget.
+	var dirs, files []marc.Entry
+	for e := range entries {
+		if e.Info.IsDir() {
+			dirs = append(dirs, e)
+		} else {
+			files = append(files, e)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("runtime.Archive: scan: %w", err)
+	}
+
+	// Sort files by extension so that solid blocks group similar content,
+	// improving zstd compression. Stability is load-bearing: the scan order it
+	// keeps holds same-directory files together, and re-sorting those on
+	// (basename, size) measured worse on every corpus (see .claude/CHANGELOG.md).
+	sort.SliceStable(files, func(i, j int) bool {
+		return filepath.Ext(files[i].RelPath) < filepath.Ext(files[j].RelPath)
+	})
+
 	// sequenced wraps each entry with a sequence number for re-ordering.
 	type sequenced struct {
 		entry marc.Entry
 		seq   int
+		cost  int64
 	}
 
-	seqCh := make(chan sequenced, 1024)
+	bud := newBudget(limit)
+	seqCh := make(chan sequenced, 256)
 	resultCh := make(chan AnalyzedEntry, 256)
 
-	// Fan-out: number entries and dispatch to workers.
+	// Fan-out: number entries in final write order and dispatch to workers.
 	go func() {
 		defer close(seqCh)
 		seq := 0
-		for e := range entries {
-			select {
-			case seqCh <- sequenced{entry: e, seq: seq}:
-				seq++
-			case <-ctx.Done():
-				return
+		for _, group := range [2][]marc.Entry{dirs, files} {
+			for _, e := range group {
+				cost := entryCost(e)
+				if err := bud.acquire(ctx, cost); err != nil {
+					return
+				}
+				select {
+				case seqCh <- sequenced{entry: e, seq: seq, cost: cost}:
+					seq++
+				case <-ctx.Done():
+					return
+				}
 			}
 		}
 	}()
@@ -254,11 +370,18 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 				default:
 				}
 
-				ae := AnalyzedEntry{Entry: s.entry, Seq: s.seq}
+				ae := AnalyzedEntry{Entry: s.entry, Seq: s.seq, cost: s.cost}
 				isSymlink := s.entry.Info.Mode()&fs.ModeSymlink != 0
 				if !s.entry.Info.IsDir() && !isSymlink && s.entry.Info.Size() > 0 {
-					sha, err := hashFile(s.entry.Path)
-					if err != nil {
+					if inlineSize(s.entry) > 0 {
+						data, sha, err := readAndHashFile(s.entry.Path)
+						if err != nil {
+							ae.Err = err
+						} else {
+							ae.SHA = sha
+							ae.Data = data
+						}
+					} else if sha, err := hashFile(s.entry.Path); err != nil {
 						ae.Err = err
 					} else {
 						ae.SHA = sha
@@ -306,55 +429,17 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 				}
 			}
 		}
-
-		// Flush remaining (should be empty if no errors).
-		for {
-			next, ok := pending[nextSeq]
-			if !ok {
-				break
-			}
-			delete(pending, nextSeq)
-			nextSeq++
-			orderedCh <- next
-		}
 	}()
 
-	// Collect all analyzed entries, separating directories from files.
-	// Directories must be written first (in scan order) so that parent
-	// references exist when child entries are inserted.
-	// Files are then sorted by extension so that solid blocks group
-	// similar content, improving zstd compression.
-	var dirs, files []AnalyzedEntry
+	var count int64
 	for ae := range orderedCh {
 		if ae.Err != nil {
 			cancel()
 			return fmt.Errorf("runtime.Archive: analyze %s: %w", ae.Entry.RelPath, ae.Err)
 		}
-		if ae.Entry.Info.IsDir() {
-			dirs = append(dirs, ae)
-		} else {
-			files = append(files, ae)
-		}
-	}
-
-	// Sort files by extension. Stability is load-bearing: the scan order it
-	// keeps holds same-directory files together, and re-sorting those on
-	// (basename, size) measured worse on every corpus (see .claude/CHANGELOG.md).
-	sort.SliceStable(files, func(i, j int) bool {
-		return filepath.Ext(files[i].Entry.RelPath) < filepath.Ext(files[j].Entry.RelPath)
-	})
-
-	// Write directories first (scan order), then sorted files.
-	var count int64
-	for _, ae := range dirs {
-		if err := w.WriteEntryWithSHA(ctx, ae.Entry, ae.SHA); err != nil {
-			cancel()
-			return fmt.Errorf("runtime.Archive: write entry %s: %w", ae.Entry.RelPath, err)
-		}
-		count++
-	}
-	for _, ae := range files {
-		if err := w.WriteEntryWithSHA(ctx, ae.Entry, ae.SHA); err != nil {
+		err := w.WriteEntryContent(ctx, ae.Entry, ae.SHA, ae.Data)
+		bud.release(ae.cost)
+		if err != nil {
 			cancel()
 			return fmt.Errorf("runtime.Archive: write entry %s: %w", ae.Entry.RelPath, err)
 		}
@@ -372,6 +457,20 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 
 	slog.Debug("archive complete", "entries", count)
 	return nil
+}
+
+// readAndHashFile reads a whole file and hashes the buffer, so the writer can
+// consume the content without reopening the path.
+func readAndHashFile(path string) ([]byte, [32]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, [32]byte{}, fmt.Errorf("readAndHashFile: read %s: %w", path, err)
+	}
+	h := blake3.New()
+	_, _ = h.Write(data)
+	var sha [32]byte
+	copy(sha[:], h.Sum(nil))
+	return data, sha, nil
 }
 
 // hashFile computes the BLAKE3-256 hash of a file.
