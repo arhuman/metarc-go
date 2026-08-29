@@ -9,10 +9,11 @@ DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
 # Quality gate (a ratchet: raise it over time, never lower it to green a build).
-# Set at the aggregate floor measured on 2026-08-14 (67.9%). The 10x standard's
-# canonical value is 80; the gap is concentrated in cmd/metarc (11.9%) and
-# cmd/analyze (untested), not in the library packages, which run 78% to 100%.
-COVER_MIN ?= 65
+# At the 10x standard's canonical value since 2026-09-18, when CLI round-trip
+# tests and the store read-path error tests took the aggregate to 83.1%. The
+# headroom over the floor is deliberate: it absorbs a new uncovered branch
+# without failing the build, and it is where the next ratchet comes from.
+COVER_MIN ?= 80
 
 ifeq ($(GOOS),windows)
 BINARY_NAME := marc.exe
