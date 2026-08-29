@@ -6,7 +6,7 @@ require (
 	github.com/klauspost/compress v1.19.2
 	github.com/spf13/cobra v1.10.2
 	github.com/zeebo/blake3 v0.2.4
-	modernc.org/sqlite v1.56.0
+	modernc.org/sqlite v1.57.0
 )
 
 require (
