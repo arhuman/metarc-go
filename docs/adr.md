@@ -205,6 +205,7 @@ Implemented (`--dict-compress`), stored in `meta.dict`. Two modes: prescan (upfr
 - In practice, gains are marginal (≈0.4% on real-world repositories)
 - Solid blocks (ADR-006) already exploit cross-file redundancy more effectively
 - **This feature is a candidate for removal.** Do not build on top of it.
+- Superseded as an approach by ADR-019 (A4): a solid block's own extension group supplies a better dictionary than a trained one, with no training step and no frozen artifact. The 0.4% recorded here was also measured against a dictionary that solid mode never consulted.
 
 ---
 
@@ -399,3 +400,81 @@ The kubernetes catalog went from 2.2 MB (7.4% of the archive) to 1.1 MB (4.0%). 
 - (-) `blobs.sha` is no longer a complete BLAKE3-256. Cross-archive deduplication (metacompression.md §11.5) remains possible but must compare prefixes. `Reader.QueryBlobSHAs` returns `[]byte` per blob rather than `[32]byte`.
 - (-) A catalog opened directly with `sqlite3` (the `marc inspect --raw` workflow) has no index on `parent_id` or `names.name`; ad-hoc queries filtering on those columns will table-scan. Recreate them locally if needed.
 - Not done, and measured as low value: moving the per-blob `offset`/`clen` of solid blobs into a `blocks` table. Those columns repeat identically across a block, so zstd already encodes them cheaply; the change is worth making only when `blocks` is needed for another reason, such as the inter-block dictionary of the compression roadmap.
+
+---
+
+## ADR-019: Inter-block continuity, a group's first block is the dictionary of the rest
+
+**Status**: Accepted
+**Date**: 2026-09-26
+
+### Context
+
+ADR-017 sized the zstd window to the solid block, so a block's last byte can reference its first. That closes the window axis *inside* a block and leaves it open *across* blocks: an extension group larger than one block still restarts from zero context at every boundary. On the kubernetes tree, `.go` is 166.3 MB and spans 6 blocks of 32 MiB; blocks 1 to 5 each begin by re-deriving a model of Go source that block 0 already paid for.
+
+This is the axis the ablation axiom admits: a bounded matching window beyond the block size, not local textual redundancy. It also replaces the static embedded dictionaries of the compression roadmap's Item 4. A dictionary here is real content from the corpus being archived, so there is no training step and no frozen artifact whose relevance decays.
+
+A throwaway probe against klauspost measured the ceiling before any production code was written, reconstituting 32 MiB blocks per extension and encoding blocks 1..n with `WithEncoderDictRaw` at level 11:
+
+| group | size | blocks | gain |
+|---|---|---|---|
+| `.go` | 166.3 MB | 6 | -1.42% |
+| `.json` | 42.6 MB | 2 | -13.08% |
+
+The gain tracks content, not volume: JSON gains nine times more than Go from a group four times smaller. Only multi-block groups gain at all, and on the kubernetes tree only two extensions exceed 32 MiB.
+
+### Decision
+
+Blocks 1..n of an extension group are compressed with the **raw** bytes of that group's first block as a zstd dictionary (patch-from semantics). Block 0 of every group stays plain, which is what bounds the dependency depth.
+
+1. **Write side.** The accumulator retains a copy of the group's first block and releases it when the group ends, so exactly one dictionary (at most one block, 32 MiB by default) is resident at a time. `setExtension` already marks group boundaries; a flush there now also ends the group.
+2. **Encoder structure.** A dictionary is fixed at encoder construction, so the dictionary travels on the job and a worker rebuilds its encoder when the job's dictionary differs from the one it holds. Blocks of a group arrive consecutively, so this is one rebuild per group boundary rather than one per block: 15 blocks on the kubernetes tree, 5 of them dictionary-compressed across 2 groups. Building a fresh encoder per dictionary-compressed block was rejected because level-11 match-table construction dominates a flush, which is the same reason the pool reuses encoders at all. The submission-order write and the single-goroutine catalog transaction are untouched.
+3. **Sole-member blocks are always plain.** A block holding exactly one blob is streamed on read with no dictionary available, so it is neither dictionary-compressed nor retained as a dictionary. This covers the oversized path *and* a blob that merely fills a block on its own: the first implementation excluded only the former and produced an unreadable archive on the full kubernetes corpus, where a 33 MB `.idx` file followed a 644 KB pooled block. The reader's invariant check caught it rather than a silent corruption.
+4. **Catalog.** `blobs.dict_block_id` records, for a dictionary-compressed block, the `block_id` whose raw content is its dictionary; NULL means plain. No index, per ADR-018.
+5. **Read side.** A non-NULL `dict_block_id` means decoding that block first. The dictionary is held in its own field rather than in `solidCache`, whose 4-entry FIFO would evict it partway through a group and force a re-decode for every later block. A dictionary block that itself claims a dictionary is rejected as a forged catalog rather than recursed into.
+6. **The dictionary is gated on a group that can span blocks.** Only an extension group whose files total more than the solid block size produces a second block, so only such a group can gain anything, while every retaining group costs a block copy plus a second level-11 encoder in the pool. The archiver already drains the whole scan before it sorts files by extension, so it sums `Info.Size()` per extension there (`runtime.solidDictExtensions`, no extra I/O and no extra pass) and passes the qualifying set to the writer as `store.WithSolidDictExtensions`. The threshold is strictly greater than one block: a group that exactly fills one block produces one block and has nothing to chain. An unset set means no group is eligible, so a caller that cannot compute it pays no memory for a gain it cannot predict. Eligibility is decided at the group boundary and held for the group, because a dictionary can only be used by a block that follows the retained one: an eligibility turning true mid-group would arrive after the block it would have retained was released. Raw totals over-estimate block count (a group's blocks are compressed), which admits a few groups that turn out to produce one block; that costs one retained block nothing reads and never affects correctness.
+7. **`--no-inter-block-dict` disables the axis outright**, so the ablation study can measure it (`.claude/doc/ABLATION_PROCEDURE.md` section 0). It follows `--no-solid` as a boolean opt-out on a mechanism that is otherwise on, and is deliberately not folded into `--dict-compress`, which is a different and measured-dead mechanism.
+
+No margin was added above one block. The measurement did not motivate one: on the kubernetes tree the two qualifying groups are `.go` at 166.3 MB and `.json` at 42.6 MB, both many times the 32 MiB block, and no corpus measured produced a group in the narrow band just above one block where a tiny second block might not repay its encoder. A margin would be a guess about a case none of the four corpora exhibits, so the rule stays the arithmetic one.
+
+Measured in archive bytes, against the previous default:
+
+| corpus | before | after | delta | pp |
+|---|---|---|---|---|
+| kubernetes tree (263 MB, no `.git`) | 29 402 427 | 28 998 973 | -403 454 | **-1.372** |
+| kubernetes full (590 MB, with `.git`) | 267 346 529 | 266 942 017 | -404 512 | -0.151 |
+| react | 17 895 568 | 17 896 545 | +977 | +0.005 |
+| loghub | 2 048 557 | 2 048 634 | +77 | +0.004 |
+
+The kill criterion was 0.5 pp on kubernetes. The tree corpus, which is what the probe measured and what isolates the compressible material, returns -1.372 pp against a -1.38 pp prediction. The same ~404 KB on the full corpus is only -0.151 pp because 267 MB of that archive is incompressible git packfiles that no preprocessor touches; the gain is identical in bytes, diluted in percentage.
+
+The gate's effect, measured as medians of three interleaved runs per point (archive bytes and peak RSS):
+
+| corpus | largest group | HEAD size / RSS | ungated size / RSS | gated size / RSS | chained blocks |
+|---|---|---|---|---|---|
+| kubernetes tree | `.go` 166.3 MB | 29 402 427 / 766 MB | 28 998 973 / 1090 MB | 28 998 973 / 1133 MB | 5 of 15 |
+| kubernetes full | `.go` 166.3 MB | 267 346 529 / 927 MB | 266 942 017 / 1246 MB | 266 942 017 / 1245 MB | 5 |
+| react | `.js` 18.7 MB | 17 895 568 / 475 MB | 17 896 545 / 466 MB | 17 896 545 / 472 MB | 0 |
+| loghub | `.csv` 6.2 MB | 2 048 557 / 279 MB | 2 048 634 / 304 MB | 2 048 634 / 265 MB | 0 |
+
+The gate is exactly neutral where the gain is real: both kubernetes archives keep their byte-identical gain and their memory, because both have groups that genuinely span blocks.
+
+Measuring the corpora that gain nothing corrected an assumption behind this work. react and loghub were expected to be paying the memory cost for no gain, and they were not: **neither ever produced a single dictionary-compressed block**, even ungated. Their largest extension groups (18.7 MB and 6.2 MB) are under the 32 MiB block, so no group had a second block to chain and the write path never retained a dictionary. Their +977 and +77 bytes are not a dictionary but the all-NULL `dict_block_id` column, and their RSS was never elevated. The pre-gate mechanism was therefore already self-limiting on those corpora; what the gate adds is that the limit is now *stated as a rule* and enforced before any block is retained, rather than emerging from block arithmetic after the fact. The gate is what makes the property checkable, and three tests now pin it.
+
+### Rejected: a `blocks` table
+
+The proposal made `dict_block_id` a column of a new `blocks` table, since `offset` and `clen` already repeat on every blob row of a block. Measured instead as an additive column on `blobs`: the catalog chunk grew 1309 bytes for 22 911 blobs, about 0.06 compressed bytes per blob, because the value is constant across a block's rows and zstd encodes that away. The duplication costs nothing worth a schema migration, which is the same finding ADR-018 recorded for `offset`/`clen`.
+
+### Consequences
+
+- (+) Gain on the one axis zstd cannot see by itself: shared context beyond the block size. It costs no training, no embedded artifact and no second pass over the data.
+- (+) Backward compatible in both directions. The column is additive, so an archive written before this change reads with no behavior change at all (`detectBlobColumn` probes for it, following the `block_id` precedent), and every block of such an archive is plain. Archives written with it are unreadable by binaries that predate it, which is correct and loud: a decoder handed no dictionary fails with `unknown dictionary` rather than decoding wrong.
+- (+) Dependency depth is bounded to 1 by construction, so random access stays bounded: reading any blob costs at most its own block plus one dictionary block. The reader asserts the invariant instead of trusting it.
+- (+) The memory cost now lands only where the gain does. A corpus with no group larger than a block retains no dictionary and builds no second encoder, so it keeps the previous write path exactly; only a corpus whose groups genuinely span blocks pays. The gate reads per-extension totals the scan has already collected, so the decision itself is free.
+- (+) The axis is ablatable. `--no-inter-block-dict` returns the kubernetes tree to HEAD's peak RSS (771 MB against 766 MB) and to 0 dictionary-compressed blocks, which is what makes the axis measurable independently rather than inferable from a size delta.
+- (-) Peak RSS archiving the kubernetes tree rises from ~766 MB to ~1133 MB, and the full corpus from ~927 MB to ~1245 MB, on the corpora that qualify. The retained dictionary is only 32 MiB of that; the rest is plain and dictionary-bearing encoders coexisting in the pool, each holding about 104 MB of level-11 match tables for a 32 MiB window. This compounds the ceiling problem ADR-017 already flagged, and the gate bounds which corpora meet it rather than lowering it.
+- (-) Wall time on the tree rises from 4.79 s to 5.18 s medians (+8%) over three interleaved runs, from the per-group encoder rebuilds. Unqualified corpora are unaffected.
+- (-) Nothing gained where no extension group exceeds the block size, which is most corpora. react and loghub move by under 0.01 pp, in the wrong direction, entirely from the all-NULL `dict_block_id` column: with the gate, neither retains a dictionary, and neither did before it.
+- (-) Archiving now drains the whole scan before opening the writer, because the gate needs per-extension totals over the entire tree (over every root, for a multi-root archive). Directory and file metadata were already fully buffered before any content was read, so this moves no memory; it does mean a scan error surfaces before the output file is created rather than after.
+- (-) `--no-inter-block-dict` does not reproduce a pre-A4 archive byte for byte: the tree comes back to 29 403 885 against HEAD's 29 402 427, the 1458-byte difference being the all-NULL `dict_block_id` column and its DDL, consistent with the 1309 bytes measured for the column above. The flag removes the mechanism, not the schema.
+- Supersedes the static-dictionary approach of ADR-011 and the compression roadmap's Item 4.

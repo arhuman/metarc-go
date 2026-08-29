@@ -58,6 +58,7 @@ type Writer struct {
 	fileHasher      *blake3.Hasher    // running hash of all bytes written so far
 	solidAcc        *solidAccumulator // non-nil when solid block compression is enabled
 	solidSize       int64             // solid block size threshold (0 = disabled)
+	solidDictExts   map[string]bool   // extensions whose groups may use the inter-block dictionary
 	zstdCfg         ZstdConfig        // per-chunk-type zstd encoder settings
 	skipPlanLog     bool              // when true, plan_log inserts are skipped entirely
 	// resultCache maps source SHA to a cached params-only transform result so
@@ -101,6 +102,27 @@ func WithDictSimple() Option {
 func WithSolidBlockSize(size int64) Option {
 	return func(w *Writer) {
 		w.solidSize = size
+	}
+}
+
+// WithSolidDictExtensions names the file extensions whose solid blocks may use
+// the inter-block dictionary: blocks 1..n of such an extension group are
+// compressed against the raw bytes of that group's first block.
+//
+// exts holds extensions as filepath.Ext returns them, leading dot included, and
+// the empty string for files with no extension. Only a group whose total size
+// exceeds the solid block size produces a second block and so gains anything,
+// while every eligible group costs a retained block of dictionary bytes plus a
+// second level-11 encoder in the compression pool. The caller decides which
+// groups qualify because only it has seen the whole tree: the writer sees one
+// file at a time and cannot know a group's total before the group has ended.
+//
+// An unset or empty set means no group is eligible, so no dictionary is retained
+// and no dict_block_id is recorded. That is deliberately the safe direction: a
+// caller that cannot compute the set pays no memory for a gain it cannot predict.
+func WithSolidDictExtensions(exts map[string]bool) Option {
+	return func(w *Writer) {
+		w.solidDictExts = exts
 	}
 }
 
@@ -229,6 +251,7 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 			w:            w,
 			maxBlockSize: w.solidSize,
 			minBlockSize: min(int64(DefaultMinSolidBlockSize), w.solidSize),
+			dictExts:     w.solidDictExts,
 		}
 	}
 

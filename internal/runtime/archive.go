@@ -55,6 +55,12 @@ type ArchiveOpts struct {
 	Workers            int      // 0 = runtime.NumCPU()
 	SolidBlockSize     int64    // 0 = disabled; >0 = solid mode with this threshold in bytes
 	DisabledTransforms []string // transform IDs to skip (e.g. "go-line-subst/v1")
+	// NoInterBlockDict disables the inter-block dictionary outright, so no solid
+	// block is compressed against its extension group's first block however large
+	// that group is. The dictionary is otherwise on, gated on a group whose files
+	// total more than one block. Set it to ablate the axis or to hold archiving
+	// peak RSS down on a corpus that would qualify.
+	NoInterBlockDict bool
 	// ZstdLevels carries per-chunk-type zstd encoder settings. The zero value
 	// means "use store.DefaultZstdConfig()". Callers may set ZstdLevels to
 	// override individual levels; any zero field within ZstdLevels is replaced
@@ -208,12 +214,6 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 		opts = append(opts, store.WithoutPlanLog())
 	}
 
-	w, err := store.OpenWriter(marcPath, opts...)
-	if err != nil {
-		return fmt.Errorf("runtime.Archive: %w", err)
-	}
-	defer func() { _ = w.Close() }()
-
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -224,7 +224,27 @@ func archiveWithSources(ctx context.Context, marcPath string, roots []string, co
 		entries = scan.Walk(ctx, roots[0])
 	}
 
-	return runArchivePipeline(ctx, cancel, w, entries, numWorkers, keepPlanLog)
+	// The scan is drained before the writer opens because the inter-block
+	// dictionary is gated on per-extension totals, which only the whole tree
+	// yields. For a multi-root archive the totals span every root, since the
+	// writer sees one extension-sorted stream across all of them.
+	dirs, files, err := collectEntries(ctx, entries)
+	if err != nil {
+		return err
+	}
+
+	if aopts.SolidBlockSize > 0 && !aopts.NoInterBlockDict {
+		opts = append(opts, store.WithSolidDictExtensions(
+			solidDictExtensions(files, aopts.SolidBlockSize)))
+	}
+
+	w, err := store.OpenWriter(marcPath, opts...)
+	if err != nil {
+		return fmt.Errorf("runtime.Archive: %w", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	return runArchivePipeline(ctx, cancel, w, dirs, files, numWorkers, keepPlanLog)
 }
 
 // inlineSize reports the byte count the analyze workers will read into memory
@@ -289,24 +309,18 @@ func (b *budget) release(n int64) {
 	}
 }
 
-// runArchivePipeline consumes entries from the scan channel, hashes files in
-// parallel using numWorkers goroutines, re-orders results to preserve the write
-// order, and writes them through the store.Writer. Hashing and compression
-// overlap: the writer consumes results as they arrive instead of waiting for
-// the whole tree to be analyzed. On success, it optionally clears the plan_log
-// table.
-func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store.Writer, entries <-chan marc.Entry, numWorkers int, keepPlanLog bool) error {
-	// A single entry must always fit, or the sequencer would wait on a budget
-	// only its own entry could free.
-	limit := inFlightBudget
-	if minLimit := inlineFileLimit + entryCostOverhead; limit < minLimit {
-		limit = minLimit
-	}
-
-	// Directories must be written first (in scan order) so that parent
-	// references exist when child entries are inserted. Only metadata is held
-	// here; content is read later, inside the budget.
-	var dirs, files []marc.Entry
+// collectEntries drains the scan channel into directories and files, and sorts
+// the files by extension.
+//
+// Directories come back in scan order and must be written first, so that parent
+// references exist when child entries are inserted. Only metadata is held here;
+// content is read later, inside the pipeline's budget.
+//
+// Sorting files by extension is what lets solid blocks group similar content.
+// Stability is load-bearing: the scan order it keeps holds same-directory files
+// together, and re-sorting those on (basename, size) measured worse on every
+// corpus (see .claude/CHANGELOG.md).
+func collectEntries(ctx context.Context, entries <-chan marc.Entry) (dirs, files []marc.Entry, err error) {
 	for e := range entries {
 		if e.Info.IsDir() {
 			dirs = append(dirs, e)
@@ -315,16 +329,60 @@ func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("runtime.Archive: scan: %w", err)
+		return nil, nil, fmt.Errorf("runtime.Archive: scan: %w", err)
 	}
 
-	// Sort files by extension so that solid blocks group similar content,
-	// improving zstd compression. Stability is load-bearing: the scan order it
-	// keeps holds same-directory files together, and re-sorting those on
-	// (basename, size) measured worse on every corpus (see .claude/CHANGELOG.md).
 	sort.SliceStable(files, func(i, j int) bool {
 		return filepath.Ext(files[i].RelPath) < filepath.Ext(files[j].RelPath)
 	})
+	return dirs, files, nil
+}
+
+// solidDictExtensions returns the extensions whose files total more than
+// blockSize bytes, which are the only groups that can span more than one solid
+// block and so the only ones an inter-block dictionary can help.
+//
+// The comparison is strictly greater than: a group that exactly fills one block
+// produces one block and has nothing to chain. Sizes come from the scan's
+// already-collected FileInfo, so this costs one pass over metadata and no I/O.
+//
+// A group's compressed blocks are smaller than its raw bytes, so raw total is an
+// over-estimate of how many blocks it fills: this admits a few groups that turn
+// out to produce a single block, which costs one retained block that nothing
+// reads and never affects correctness.
+func solidDictExtensions(files []marc.Entry, blockSize int64) map[string]bool {
+	if blockSize <= 0 {
+		return nil
+	}
+	totals := make(map[string]int64)
+	for _, e := range files {
+		totals[filepath.Ext(e.RelPath)] += e.Info.Size()
+	}
+	var exts map[string]bool
+	for ext, total := range totals {
+		if total > blockSize {
+			if exts == nil {
+				exts = make(map[string]bool)
+			}
+			exts[ext] = true
+		}
+	}
+	return exts
+}
+
+// runArchivePipeline hashes files in parallel using numWorkers goroutines,
+// re-orders results to preserve the write order, and writes them through the
+// store.Writer. dirs and files come from collectEntries, already ordered.
+// Hashing and compression overlap: the writer consumes results as they arrive
+// instead of waiting for the whole tree to be analyzed. On success, it
+// optionally clears the plan_log table.
+func runArchivePipeline(ctx context.Context, cancel context.CancelFunc, w *store.Writer, dirs, files []marc.Entry, numWorkers int, keepPlanLog bool) error {
+	// A single entry must always fit, or the sequencer would wait on a budget
+	// only its own entry could free.
+	limit := inFlightBudget
+	if minLimit := inlineFileLimit + entryCostOverhead; limit < minLimit {
+		limit = minLimit
+	}
 
 	// sequenced wraps each entry with a sequence number for re-ordering.
 	type sequenced struct {

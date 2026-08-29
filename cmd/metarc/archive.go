@@ -97,6 +97,7 @@ func newArchiveCmd() *cobra.Command {
 	var workers int
 	var dictCompress string
 	var noSolid bool
+	var noInterBlockDict bool
 	var solidBlockSize string
 	var disableTransforms []string
 	var zstdLevel, zstdLevelBlob, zstdLevelSolid, zstdLevelCatalog, zstdLevelDict int
@@ -133,6 +134,7 @@ siblings under the destination. Two sources may not share the same basename.`,
 				Workers:            workers,
 				DisabledTransforms: disableTransforms,
 				ZstdLevels:         zCfg,
+				NoInterBlockDict:   noInterBlockDict,
 			}
 			if !noSolid {
 				size, err := parseByteSize(solidBlockSize)
@@ -166,6 +168,7 @@ siblings under the destination. Two sources may not share the same basename.`,
 	cmd.Flags().IntVar(&workers, "workers", 0, "number of analysis workers (default: runtime.NumCPU())")
 	cmd.Flags().StringVar(&dictCompress, "dict-compress", "", `dictionary compression mode: "prescan" (walk tree first) or "simple" (train mid-stream)`)
 	cmd.Flags().BoolVar(&noSolid, "no-solid", false, "disable solid block compression (use per-blob compression)")
+	cmd.Flags().BoolVar(&noInterBlockDict, "no-inter-block-dict", false, "disable the inter-block dictionary (blocks of an extension group no longer reference its first block)")
 	cmd.Flags().StringVar(&solidBlockSize, "solid-block-size", "32MB", "solid block size threshold; also sets the zstd match window")
 	cmd.Flags().StringSliceVar(&disableTransforms, "disable-transform", nil, `transform IDs to skip (e.g. "go-line-subst/v1")`)
 

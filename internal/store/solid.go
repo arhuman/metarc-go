@@ -46,6 +46,12 @@ type solidAccumulator struct {
 	extInit      bool          // currentExt has been set at least once
 	streamEnc    *zstd.Encoder // encoder reserved for the streamed oversized path
 
+	dictExts      map[string]bool // extensions whose groups may use the inter-block dictionary
+	groupDict     []byte          // raw bytes of the current group's first block, nil until it flushes
+	groupDictID   int64           // block id those bytes belong to, valid while groupDict != nil
+	groupHasDict  bool            // the current group has already contributed its first block
+	groupEligible bool            // the current group's extension may use a dictionary
+
 	jobs    chan solidJob    // submitted blocks
 	results chan solidResult // compressed blocks, arriving out of order
 	wg      sync.WaitGroup
@@ -65,6 +71,8 @@ type solidJob struct {
 	blockID int64
 	buf     []byte
 	pending []pendingBlob
+	dict    []byte // raw dictionary, nil for a group's first block and for oversized blocks
+	dictID  int64  // block id dict came from, meaningful only when dict != nil
 }
 
 // solidResult is a compressed block awaiting its turn to be written. raw is the
@@ -74,6 +82,8 @@ type solidResult struct {
 	compressed []byte
 	raw        []byte
 	pending    []pendingBlob
+	dictID     int64 // block id whose raw bytes this block was compressed against, 0 for none
+	hasDict    bool
 	err        error
 }
 
@@ -87,15 +97,43 @@ type solidResult struct {
 // pipeline feeds files in extension order, skipping the flush makes
 // consecutive rare extensions pool into one block on their own, with no
 // separate routing.
+//
+// A flush here also ends the extension group, so the retained inter-block
+// dictionary is released: blocks of the next group have no shared context with
+// this one and must start from their own first block.
+//
+// Eligibility for that dictionary is decided here, from dictExts, and held for
+// the whole group. It is decided once rather than re-derived per block because
+// a dictionary can only be used by a block that follows the retained one: an
+// eligibility that turned true mid-group would arrive after the block it would
+// have retained was already released.
 func (sa *solidAccumulator) setExtension(ext string) error {
 	if sa.extInit && ext != sa.currentExt && int64(len(sa.buf)) >= sa.minBlockSize {
 		if err := sa.flush(); err != nil {
 			return fmt.Errorf("solidAccumulator.setExtension: flush: %w", err)
 		}
+		sa.endGroup()
+	}
+	// A block under minBlockSize pools extensions, so a group can span several.
+	// The one in effect when its first block flushes governs it: disqualifying a
+	// whole group for a small pooled tail would cost the gain on the large run
+	// that tail landed in front of.
+	if !sa.groupHasDict {
+		sa.groupEligible = sa.dictExts[ext]
 	}
 	sa.currentExt = ext
 	sa.extInit = true
 	return nil
+}
+
+// endGroup releases the dictionary retained for the group that just ended. It is
+// the only place the retained copy is dropped, which is what bounds the write
+// path to one block of dictionary bytes resident at a time.
+func (sa *solidAccumulator) endGroup() {
+	sa.groupDict = nil
+	sa.groupDictID = 0
+	sa.groupHasDict = false
+	sa.groupEligible = false
 }
 
 type pendingBlob struct {
@@ -156,6 +194,8 @@ func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byt
 			blockOffset: blockOffset,
 			ulen:        dataLen,
 		})
+		// flush keeps this block plain and ends the group: it holds one blob, so
+		// the read path streams it with no dictionary available.
 		if err := sa.flush(); err != nil {
 			return 0, fmt.Errorf("solidAccumulator.addBlob: flush oversized: %w", err)
 		}
@@ -218,6 +258,9 @@ func (sa *solidAccumulator) addOversizedStream(r io.Reader, ulen int64, sha [32]
 	if err := sa.drainAll(); err != nil {
 		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: drain: %w", err)
 	}
+	// The streaming read path decodes this frame with no dictionary, so the
+	// block stays plain and must not be retained as one either.
+	sa.endGroup()
 	if err := sa.ensureStreamEncoder(); err != nil {
 		return 0, err
 	}
@@ -279,15 +322,30 @@ func (sa *solidAccumulator) addOversizedStream(r io.Reader, ulen int64, sha [32]
 // path share these settings, since a different level or window would change the
 // bytes a block compresses to.
 func (sa *solidAccumulator) newSolidEncoder() (*zstd.Encoder, error) {
+	return sa.newSolidEncoderWithDict(nil)
+}
+
+// newSolidEncoderWithDict builds a solid-block encoder that prefixes every frame
+// it produces with dict as raw context (zstd patch-from semantics). A nil dict
+// yields the plain encoder, byte-identical to what earlier versions produced.
+//
+// The dictionary id is a fixed constant: it is only the handshake that makes the
+// decoder refuse a frame it has no dictionary for, and the reader resolves the
+// actual bytes through the catalog's dict_block_id, never through this id.
+func (sa *solidAccumulator) newSolidEncoderWithDict(dict []byte) (*zstd.Encoder, error) {
 	window := sa.w.zstdCfg.WindowSize
 	if window == 0 {
 		window = solidWindowFor(sa.maxBlockSize)
 	}
-	enc, err := zstd.NewWriter(nil,
+	opts := []zstd.EOption{
 		zstd.WithEncoderLevel(sa.w.zstdCfg.Solid),
 		zstd.WithEncoderConcurrency(1),
 		zstd.WithWindowSize(window),
-	)
+	}
+	if dict != nil {
+		opts = append(opts, zstd.WithEncoderDictRaw(marc.SolidRawDictID, dict))
+	}
+	enc, err := zstd.NewWriter(nil, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("solidAccumulator: create encoder: %w", err)
 	}
@@ -339,6 +397,12 @@ func (sa *solidAccumulator) startWorkers() error {
 // and kept for every later one: at level 11 with a 32 MiB window the match
 // tables cost about 100 MB to allocate, so a worker that never runs must not
 // pay for one and a worker that runs must not pay twice.
+//
+// A dictionary is fixed at encoder construction, so the encoder is rebuilt when
+// a job's dictionary differs from the one it holds. Blocks of a group arrive
+// consecutively, so that is once per group boundary rather than once per block;
+// building a fresh encoder for every dictionary-compressed block was rejected
+// for exactly that reason.
 func (sa *solidAccumulator) compressLoop() {
 	defer sa.wg.Done()
 	var enc *zstd.Encoder
@@ -348,15 +412,31 @@ func (sa *solidAccumulator) compressLoop() {
 		}
 	}()
 
+	// Dictionary identity of the encoder currently held, so a run of blocks in
+	// one group reuses it and only a group change pays for a rebuild.
+	var encDictID int64
+	var encHasDict bool
+
 	for job := range sa.jobs {
-		res := solidResult{blockID: job.blockID, raw: job.buf, pending: job.pending}
-		if enc == nil {
+		res := solidResult{
+			blockID: job.blockID,
+			raw:     job.buf,
+			pending: job.pending,
+			dictID:  job.dictID,
+			hasDict: job.dict != nil,
+		}
+		if enc == nil || encHasDict != (job.dict != nil) || encDictID != job.dictID {
+			if enc != nil {
+				_ = enc.Close()
+				enc = nil
+			}
 			var err error
-			if enc, err = sa.newSolidEncoder(); err != nil {
+			if enc, err = sa.newSolidEncoderWithDict(job.dict); err != nil {
 				res.err = err
 				sa.results <- res
 				return
 			}
+			encDictID, encHasDict = job.dictID, job.dict != nil
 		}
 		res.compressed = enc.EncodeAll(job.buf, nil)
 		sa.results <- res
@@ -384,6 +464,26 @@ func (sa *solidAccumulator) flush() error {
 	}
 
 	job := solidJob{blockID: sa.blockCounter, buf: sa.buf, pending: sa.pending}
+	switch {
+	case len(job.pending) == 1:
+		// The reader streams a sole-member block with no dictionary available, so
+		// such a block stays plain and never becomes a dictionary either. A blob
+		// that fills a block on its own lands here as well as an oversized one.
+		sa.endGroup()
+	case !sa.groupEligible:
+		// The group's total cannot exceed one block, so it has no second block to
+		// chain and retaining its first would cost a block copy and a second
+		// level-11 encoder for nothing.
+	case sa.groupHasDict:
+		job.dict = sa.groupDict
+		job.dictID = sa.groupDictID
+	default:
+		// The copy is required: the worker owns job.buf and the completion stage
+		// recycles it into freeBufs, where the next block overwrites it.
+		sa.groupDict = append([]byte(nil), sa.buf...)
+		sa.groupDictID = job.blockID
+		sa.groupHasDict = true
+	}
 	sa.blockCounter++
 
 	for {
@@ -459,10 +559,14 @@ func (sa *solidAccumulator) writeBlock(res solidResult) error {
 	clen := int64(len(res.compressed))
 	sa.w.blobOff += int64(len(chunkHeader)) + clen
 
+	var dictParam any
+	if res.hasDict {
+		dictParam = res.dictID
+	}
 	for _, p := range res.pending {
 		if _, err := sa.w.tx.Exec(
-			`UPDATE blobs SET offset = ?, clen = ? WHERE id = ?`,
-			chunkOffset, clen, p.rowID,
+			`UPDATE blobs SET offset = ?, clen = ?, dict_block_id = ? WHERE id = ?`,
+			chunkOffset, clen, dictParam, p.rowID,
 		); err != nil {
 			return fmt.Errorf("solidAccumulator: update blob %d: %w", p.rowID, err)
 		}
@@ -507,7 +611,11 @@ func (sa *solidAccumulator) finish() error {
 	if err := sa.flush(); err != nil {
 		return err
 	}
-	return sa.drainAll()
+	if err := sa.drainAll(); err != nil {
+		return err
+	}
+	sa.endGroup()
+	return nil
 }
 
 // close releases the compression pool and its encoders. Safe to call on an

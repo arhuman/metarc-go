@@ -29,9 +29,12 @@ type Reader struct {
 	format         string           // "single-file" or "split-file"
 	dictData       []byte           // shared zstd dictionary (nil if not present)
 	hasSolidBlocks bool             // true if blobs table has block_id column
+	hasDictBlocks  bool             // true if blobs table has the dict_block_id column
 	solidCache     map[int64][]byte // offset -> decompressed solid block data
 	solidCacheKeys []int64          // insertion order for LRU eviction
 	soleBlocks     map[int64]bool   // block_id -> the block holds exactly one blob
+	dictBlockID    int64            // block id whose raw bytes dictBlock holds
+	dictBlock      []byte           // the current group's dictionary, decoded on demand
 	blobBytesSize  int64            // size of the file holding blob bytes: the archive, or the legacy sidecar
 }
 
@@ -170,7 +173,8 @@ func openReaderSingle(marcPath string) (*Reader, error) {
 		}
 	}
 
-	r.hasSolidBlocks = detectSolidColumns(db)
+	r.hasSolidBlocks = detectBlobColumn(db, "block_id")
+	r.hasDictBlocks = detectBlobColumn(db, "dict_block_id")
 	r.soleBlocks = loadSoleMemberBlocks(db, r.hasSolidBlocks)
 
 	return r, nil
@@ -203,7 +207,8 @@ func openReaderSplit(marcPath string) (*Reader, error) {
 		solidCache:    make(map[int64][]byte),
 		blobBytesSize: blobInfo.Size(),
 	}
-	r.hasSolidBlocks = detectSolidColumns(db)
+	r.hasSolidBlocks = detectBlobColumn(db, "block_id")
+	r.hasDictBlocks = detectBlobColumn(db, "dict_block_id")
 	r.soleBlocks = loadSoleMemberBlocks(db, r.hasSolidBlocks)
 	return r, nil
 }
@@ -287,15 +292,24 @@ func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 	var offset, clen, ulen int64
 	var compressed int
 	var blockID, blockOffset int64
+	var dictBlockID sql.NullInt64
 
-	if r.hasSolidBlocks {
+	switch {
+	case r.hasDictBlocks:
+		err := r.db.QueryRow(
+			`SELECT offset, clen, ulen, compressed, COALESCE(block_id, 0), COALESCE(block_offset, 0), dict_block_id FROM blobs WHERE id = ?`, blobID,
+		).Scan(&offset, &clen, &ulen, &compressed, &blockID, &blockOffset, &dictBlockID)
+		if err != nil {
+			return nil, fmt.Errorf("store.OpenBlob: lookup blob %d: %w", blobID, err)
+		}
+	case r.hasSolidBlocks:
 		err := r.db.QueryRow(
 			`SELECT offset, clen, ulen, compressed, COALESCE(block_id, 0), COALESCE(block_offset, 0) FROM blobs WHERE id = ?`, blobID,
 		).Scan(&offset, &clen, &ulen, &compressed, &blockID, &blockOffset)
 		if err != nil {
 			return nil, fmt.Errorf("store.OpenBlob: lookup blob %d: %w", blobID, err)
 		}
-	} else {
+	default:
 		err := r.db.QueryRow(
 			`SELECT offset, clen, ulen, compressed FROM blobs WHERE id = ?`, blobID,
 		).Scan(&offset, &clen, &ulen, &compressed)
@@ -311,9 +325,14 @@ func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 	// Handle solid block blobs: decompress the whole block, slice out the blob.
 	if compressed == marc.CompressSolid {
 		if r.soleBlocks[blockID] {
+			// The streaming path has no dictionary to hand the decoder, and the
+			// write path never gives a sole-member block one.
+			if dictBlockID.Valid {
+				return nil, fmt.Errorf("store.OpenBlob: blob %d: sole member of block %d claims dictionary block %d", blobID, blockID, dictBlockID.Int64)
+			}
 			return r.streamSoleSolidBlob(blobID, offset, clen, blockOffset, ulen)
 		}
-		return r.openSolidBlob(offset, clen, blockOffset, ulen)
+		return r.openSolidBlob(blobID, offset, clen, blockOffset, ulen, dictBlockID)
 	}
 
 	var blobReader io.ReaderAt
@@ -474,9 +493,21 @@ func (r *Reader) streamSoleSolidBlob(blobID, chunkOffset, clen, blockOffset, ule
 
 // openSolidBlob reads a solid block (decompress if not cached) and returns a
 // reader for the slice [blockOffset : blockOffset+ulen].
-func (r *Reader) openSolidBlob(chunkOffset, clen, blockOffset, ulen int64) (io.ReadCloser, error) {
+//
+// dictBlockID names the block whose raw content seeds the zstd decoder, for a
+// block compressed against its extension group's first block. It is NULL for a
+// plain block, which is every block of a pre-dictionary archive.
+func (r *Reader) openSolidBlob(blobID, chunkOffset, clen, blockOffset, ulen int64, dictBlockID sql.NullInt64) (io.ReadCloser, error) {
 	block, ok := r.solidCache[chunkOffset]
 	if !ok {
+		var dict []byte
+		if dictBlockID.Valid {
+			var err error
+			if dict, err = r.solidDictionary(blobID, dictBlockID.Int64); err != nil {
+				return nil, err
+			}
+		}
+
 		// Skip past the 5-byte chunk header to get the compressed payload.
 		// clen has already been bounded against the archive size by
 		// checkBlobExtent, which is what makes this allocation safe.
@@ -486,17 +517,11 @@ func (r *Reader) openSolidBlob(chunkOffset, clen, blockOffset, ulen int64) (io.R
 			return nil, fmt.Errorf("store.openSolidBlob: read compressed block at %d: %w", chunkOffset, err)
 		}
 
-		// A solid block decodes to the whole block, not to this blob, so ulen is
-		// not its bound: the shared cap applies instead.
-		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(maxDecompressedSize))
-		if err != nil {
-			return nil, fmt.Errorf("store.openSolidBlob: create decoder: %w", err)
-		}
-		block, err = dec.DecodeAll(compData, nil)
-		dec.Close()
+		decoded, err := r.decodeSolidBlock(compData, dict)
 		if err != nil {
 			return nil, fmt.Errorf("store.openSolidBlob: decompress block at %d: %w", chunkOffset, err)
 		}
+		block = decoded
 
 		// Evict oldest entry if cache is full.
 		if len(r.solidCache) >= solidCacheMaxEntries {
@@ -506,21 +531,96 @@ func (r *Reader) openSolidBlob(chunkOffset, clen, blockOffset, ulen int64) (io.R
 		}
 		r.solidCache[chunkOffset] = block
 		r.solidCacheKeys = append(r.solidCacheKeys, chunkOffset)
+		return sliceSolidBlock(block, blockOffset, ulen)
 	}
 
+	return sliceSolidBlock(block, blockOffset, ulen)
+}
+
+// sliceSolidBlock returns a reader over one blob's extent inside a decoded block.
+func sliceSolidBlock(block []byte, blockOffset, ulen int64) (io.ReadCloser, error) {
 	// Compared without adding blockOffset to ulen: both come from the catalog,
 	// and their sum overflows int64 for crafted values, which would turn this
 	// bounds check into the slice panic it exists to prevent.
 	if blockOffset < 0 || ulen < 0 || blockOffset > int64(len(block)) || ulen > int64(len(block))-blockOffset {
 		return nil, fmt.Errorf("store.openSolidBlob: slice at %d for %d bytes out of bounds (block len %d)", blockOffset, ulen, len(block))
 	}
-
 	return io.NopCloser(bytes.NewReader(block[blockOffset : blockOffset+ulen])), nil
 }
 
-// detectSolidColumns checks whether the blobs table has the block_id column
-// (present in archives created with solid block compression).
-func detectSolidColumns(db *sql.DB) bool {
+// decodeSolidBlock decompresses one solid block payload. A non-nil dict is the
+// raw content the frame was compressed against; a decoder handed the wrong bytes
+// or none at all fails with "unknown dictionary" rather than decoding wrong,
+// which is what makes a dictionary mismatch loud instead of silent.
+func (r *Reader) decodeSolidBlock(compData, dict []byte) ([]byte, error) {
+	// A solid block decodes to the whole block, not to one blob, so a blob's
+	// ulen is not its bound: the shared cap applies instead.
+	opts := []zstd.DOption{
+		zstd.WithDecoderConcurrency(1),
+		zstd.WithDecoderMaxMemory(maxDecompressedSize),
+	}
+	if dict != nil {
+		opts = append(opts, zstd.WithDecoderDictRaw(marc.SolidRawDictID, dict))
+	}
+	dec, err := zstd.NewReader(nil, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("create decoder: %w", err)
+	}
+	defer dec.Close()
+	return dec.DecodeAll(compData, nil)
+}
+
+// solidDictionary returns the raw decoded bytes of block dictID, decoding it if
+// it is not the dictionary already held.
+//
+// Dependency depth is bounded to 1 by construction: the write path only ever
+// makes a group's first block a dictionary, and that block is plain. This
+// asserts the invariant rather than trusting it, so a forged catalog pointing a
+// dictionary block at another one is an error instead of unbounded recursion.
+//
+// The dictionary is held in its own field rather than in solidCache: at four
+// FIFO entries a dictionary would be evicted partway through a group and
+// re-decoded for every later block of it.
+func (r *Reader) solidDictionary(blobID, dictID int64) ([]byte, error) {
+	if r.dictBlock != nil && r.dictBlockID == dictID {
+		return r.dictBlock, nil
+	}
+
+	var offset, clen, ulen int64
+	var innerDict sql.NullInt64
+	err := r.db.QueryRow(
+		`SELECT offset, clen, ulen, dict_block_id FROM blobs WHERE block_id = ? LIMIT 1`, dictID,
+	).Scan(&offset, &clen, &ulen, &innerDict)
+	if err != nil {
+		return nil, fmt.Errorf("store.OpenBlob: blob %d: dictionary block %d: %w", blobID, dictID, err)
+	}
+	if innerDict.Valid {
+		return nil, fmt.Errorf("store.OpenBlob: blob %d: dictionary block %d itself claims dictionary block %d", blobID, dictID, innerDict.Int64)
+	}
+	if err := r.checkBlobExtent(blobID, offset, clen, ulen); err != nil {
+		return nil, err
+	}
+
+	compData := make([]byte, clen)
+	if _, err := r.arcFile.ReadAt(compData, offset+chunkHeaderSize); err != nil {
+		return nil, fmt.Errorf("store.OpenBlob: blob %d: read dictionary block %d at %d: %w", blobID, dictID, offset, err)
+	}
+	block, err := r.decodeSolidBlock(compData, nil)
+	if err != nil {
+		return nil, fmt.Errorf("store.OpenBlob: blob %d: decompress dictionary block %d: %w", blobID, dictID, err)
+	}
+
+	r.dictBlock = block
+	r.dictBlockID = dictID
+	return block, nil
+}
+
+// detectBlobColumn reports whether the blobs table carries the named column.
+// The schema only ever gains columns, so probing instead of assuming is what
+// lets one binary read archives written before a column existed: block_id is
+// absent from pre-solid archives and dict_block_id from archives written before
+// inter-block dictionaries.
+func detectBlobColumn(db *sql.DB, column string) bool {
 	rows, err := db.Query("PRAGMA table_info(blobs)")
 	if err != nil {
 		return false
@@ -535,7 +635,7 @@ func detectSolidColumns(db *sql.DB) bool {
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
 			return false
 		}
-		if name == "block_id" {
+		if name == column {
 			return true
 		}
 	}
@@ -586,6 +686,19 @@ func (r *Reader) QuerySolidBlockCount() int64 {
 	}
 	var count int64
 	_ = r.db.QueryRow(`SELECT COUNT(DISTINCT block_id) FROM blobs WHERE block_id IS NOT NULL`).Scan(&count)
+	return count
+}
+
+// QueryDictBlockCount returns the number of distinct solid blocks compressed
+// against another block as their zstd dictionary. Returns 0 for archives written
+// before dict_block_id existed, and for archives whose every block is plain
+// because no extension group qualified or the dictionary was disabled.
+func (r *Reader) QueryDictBlockCount() int64 {
+	if !r.hasDictBlocks {
+		return 0
+	}
+	var count int64
+	_ = r.db.QueryRow(`SELECT COUNT(DISTINCT block_id) FROM blobs WHERE dict_block_id IS NOT NULL`).Scan(&count)
 	return count
 }
 

@@ -157,6 +157,15 @@ const StoredSHALen = 16
 // construction and readers reject it.
 const MaxBlobPayload = 512 * 1024 * 1024
 
+// SolidRawDictID is the zstd dictionary id stamped into a solid block compressed
+// against the raw content of its extension group's first block.
+//
+// It carries no information: it is only the handshake that makes a decoder
+// holding no dictionary reject the frame with "unknown dictionary" instead of
+// decoding it wrong. Which block supplies the bytes is recorded in
+// blobs.dict_block_id, and readers must resolve the dictionary from there.
+const SolidRawDictID = 1
+
 const SchemaDDL = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS names (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
@@ -184,7 +193,8 @@ CREATE TABLE IF NOT EXISTS blobs (
     ulen         INTEGER NOT NULL,
     compressed   INTEGER NOT NULL DEFAULT 1,
     block_id     INTEGER,
-    block_offset INTEGER
+    block_offset INTEGER,
+    dict_block_id INTEGER   -- block whose raw content is this block's zstd dictionary; NULL = plain
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_blobs_sha ON blobs(sha);
 CREATE INDEX IF NOT EXISTS idx_blobs_source_sha ON blobs(source_sha);

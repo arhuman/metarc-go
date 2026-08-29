@@ -2,11 +2,14 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/arhuman/metarc-go/internal/store"
 )
 
 // runCLI drives the full cobra command tree in-process, exactly as main() does,
@@ -168,6 +171,7 @@ func TestCLIArchiveOptions(t *testing.T) {
 		flags []string
 	}{
 		{"no solid blocks", []string{"--no-solid"}},
+		{"no inter-block dictionary", []string{"--no-inter-block-dict"}},
 		{"uncompressed blobs", []string{"--final-compressor", "none"}},
 		{"explicit zstd levels", []string{"--zstd-level", "3", "--zstd-level-catalog", "11"}},
 		{"small solid blocks", []string{"--solid-block-size", "1MB"}},
@@ -494,5 +498,54 @@ func TestGetRSSPeakKB(t *testing.T) {
 	}
 	if got == 0 && (runtime.GOOS == "linux" || runtime.GOOS == "darwin") {
 		t.Errorf("getRSSPeakKB() = 0 on %s, want a positive peak", runtime.GOOS)
+	}
+}
+
+// TestCLINoInterBlockDictReachesOpts pins that --no-inter-block-dict reaches
+// ArchiveOpts rather than merely being accepted as a flag. A corpus whose one
+// extension group exceeds the block size chains without the flag, so the
+// difference between the two archives isolates the flag itself.
+func TestCLINoInterBlockDictReachesOpts(t *testing.T) {
+	// 1 MiB blocks with 4 MiB of one extension: several blocks in one group, the
+	// only shape a dictionary applies to.
+	const blockSize = "1MB"
+	src := t.TempDir()
+	// 24 files of ~185 KB: several per 1 MiB block, so no block is a sole member
+	// (a sole-member block stays plain by design and would never chain).
+	for i := range 24 {
+		// Distinct per file: byte-identical files dedup to one blob, which would
+		// leave a single block and nothing to chain.
+		var b strings.Builder
+		for line := 0; line < 5000; line++ {
+			fmt.Fprintf(&b, "shared dictionary payload line %d %d\n", i, line)
+		}
+		name := filepath.Join(src, fmt.Sprintf("f%d.aaa", i))
+		if err := os.WriteFile(name, []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	dictCount := func(t *testing.T, flags ...string) int64 {
+		t.Helper()
+		marcPath := filepath.Join(t.TempDir(), "out.marc")
+		args := append([]string{"archive", marcPath, src, "--solid-block-size", blockSize}, flags...)
+		mustRunCLI(t, args...)
+		mustRunCLI(t, "verify", marcPath)
+
+		r, err := store.OpenReader(marcPath)
+		if err != nil {
+			t.Fatalf("open archive: %v", err)
+		}
+		defer func() { _ = r.Close() }()
+		return r.QueryDictBlockCount()
+	}
+
+	// Without the flag the group qualifies, which is what makes the flag's
+	// effect observable rather than vacuous.
+	if n := dictCount(t); n == 0 {
+		t.Fatal("corpus produced no dictionary-compressed block without the flag; the test cannot isolate it")
+	}
+	if n := dictCount(t, "--no-inter-block-dict"); n != 0 {
+		t.Errorf("--no-inter-block-dict left %d dictionary-compressed block(s), want 0", n)
 	}
 }
