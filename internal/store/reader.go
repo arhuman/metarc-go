@@ -16,16 +16,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// maxDecompressedSize caps every zstd decode on the read path: the catalog
-// chunk, a standalone blob and a solid block alike. It is also the ceiling on
-// any bound derived from a catalog length, and the largest buffer the read path
-// will allocate from one.
-//
-// 512 MB is zstd.MaxWindowSize, the widest match window cmd/metarc accepts
-// (resolveZstdWindow) and the widest solidWindowFor can pick, so the cap cannot
-// reject a frame a legitimate encoder produced.
-const maxDecompressedSize = 512 * 1024 * 1024
-
 // chunkHeaderSize is the [Type 1B][Len 4B] prefix in front of every chunk
 // payload in a single-file archive.
 const chunkHeaderSize = 5
@@ -361,9 +351,17 @@ func (r *Reader) OpenBlob(blobID int64) (io.ReadCloser, error) {
 //
 // offset is the chunk offset as stored in the catalog; the chunk header a
 // single-file archive puts in front of the payload is accounted for here.
+//
+// ulen is bounded against maxDecompressedSize rather than against the archive
+// size: a compressed blob decodes to more bytes than it occupies, so the file
+// length says nothing about it. The write path caps the same quantity, so a
+// ulen over the limit can only come from a forged catalog.
 func (r *Reader) checkBlobExtent(blobID, offset, clen, ulen int64) error {
 	if offset < 0 || clen < 0 || ulen < 0 {
 		return fmt.Errorf("store.OpenBlob: blob %d: negative extent (offset %d, clen %d, ulen %d)", blobID, offset, clen, ulen)
+	}
+	if ulen > maxDecompressedSize {
+		return fmt.Errorf("store.OpenBlob: blob %d: ulen %d is over the %d byte payload limit", blobID, ulen, maxDecompressedSize)
 	}
 
 	payloadOff := offset

@@ -151,6 +151,12 @@ type Entry struct {
 // the storage medium corrupting the file.
 const StoredSHALen = 16
 
+// MaxBlobPayload is a format invariant: no blob payload (the post-transform,
+// pre-compression bytes that blobs.ulen records and blobs.sha hashes) and no
+// solid block may exceed it, so an archive holding a larger one is invalid by
+// construction and readers reject it.
+const MaxBlobPayload = 512 * 1024 * 1024
+
 const SchemaDDL = `
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS names (id INTEGER PRIMARY KEY, name TEXT NOT NULL);

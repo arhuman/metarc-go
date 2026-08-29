@@ -190,6 +190,13 @@ func OpenWriter(marcPath string, opts ...Option) (*Writer, error) {
 		opt(w)
 	}
 
+	// A block over the cap would decode to bytes the read path refuses, so the
+	// archive would be unreadable by the writer that produced it.
+	if w.solidSize > maxDecompressedSize {
+		w.cleanup()
+		return nil, fmt.Errorf("store.OpenWriter: solid block size %d is over the %d byte limit", w.solidSize, maxDecompressedSize)
+	}
+
 	// Record the resolved zstd levels in the meta table so readers/inspect
 	// can report how an archive was produced. Older archives without these
 	// keys remain readable; consumers must tolerate missing rows.
@@ -395,6 +402,7 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 		compress:  w.compressor,
 		zstdEnc:   w.zstdEnc,
 		dictEnc:   w.dictEnc,
+		relPath:   e.RelPath,
 		zstdLevel: w.zstdCfg.Blob,
 		dictLevel: w.zstdCfg.Dict,
 		window:    w.zstdCfg.WindowSize,

@@ -83,6 +83,10 @@ Metarc is **experimental, but already usable**.
 - Supports multiple transforms and strategies
 - Designed for experimentation and iteration
 
+Known limitation: a file whose post-transform payload exceeds 512 MB cannot be
+archived. That ceiling is a format invariant, and it is what lets the read path
+bound every allocation it makes from a catalog value.
+
 ---
 
 ## Why Metarc exists

@@ -23,6 +23,7 @@ type blobSink struct {
 	zstdEnc   *zstd.Encoder
 	dictEnc   *zstd.Encoder     // encoder with dictionary (when dict-compress enabled)
 	sourceSHA [32]byte          // original content SHA for dedup (set by writeFileWithSHA)
+	relPath   string            // entry the sink is writing for, used to name it in errors
 	zstdLevel zstd.EncoderLevel // level for per-blob zstd encoder
 	dictLevel zstd.EncoderLevel // level for dict-encoded zstd encoder
 	window    int               // optional zstd window size (0 = library default)
@@ -76,6 +77,10 @@ func (s *blobSink) WriteRaw(_ context.Context, r io.Reader) (marc.BlobID, error)
 // through the solid accumulator. The blob row is inserted with
 // compressed=CompressNone.
 func (s *blobSink) writeDataRaw(data []byte, sha [32]byte) (marc.BlobID, error) {
+	if err := checkBlobPayloadSize(s.relPath, int64(len(data))); err != nil {
+		return 0, fmt.Errorf("blobSink.writeDataRaw: %w", err)
+	}
+
 	if id, ok := s.Reuse(sha); ok {
 		return id, nil
 	}
@@ -117,6 +122,12 @@ func (s *blobSink) writeDataRaw(data []byte, sha [32]byte) (marc.BlobID, error) 
 
 // writeData deduplicates on sha, compresses, and writes the blob chunk.
 func (s *blobSink) writeData(data []byte, sha [32]byte) (marc.BlobID, error) {
+	// Ahead of the dedup lookup: the cap is a property of the payload, not of
+	// whether this archive happens to have stored it already.
+	if err := checkBlobPayloadSize(s.relPath, int64(len(data))); err != nil {
+		return 0, fmt.Errorf("blobSink.writeData: %w", err)
+	}
+
 	// Check for existing blob with same hash.
 	if id, ok := s.Reuse(sha); ok {
 		return id, nil

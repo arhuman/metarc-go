@@ -83,10 +83,11 @@ func FuzzReader_catalogColumn(f *testing.F) {
 
 	// The boundary values the new guards reject, plus a benign one.
 	values := []int64{
-		int64(len(plain)) + 1, // one byte more than the archive can hold
-		math.MaxUint32,        // widest length the chunk header can express
-		math.MaxInt64,         // overflow bait for offset+length arithmetic
-		-1,                    // negative, i.e. a huge unsigned value
+		int64(len(plain)) + 1,   // one byte more than the archive can hold
+		math.MaxUint32,          // widest length the chunk header can express
+		math.MaxInt64,           // overflow bait for offset+length arithmetic
+		-1,                      // negative, i.e. a huge unsigned value
+		marc.MaxBlobPayload + 1, // one byte over the format's payload invariant
 		1 << 40,
 		0,
 	}
@@ -148,8 +149,10 @@ func TestReader_catalogColumnBounds(t *testing.T) {
 		{name: "offset max int64", column: "blobs.offset", value: math.MaxInt64, wantErr: "chunk offset"},
 		{name: "offset negative", column: "blobs.offset", value: -1, wantErr: "negative extent"},
 		{name: "ulen negative", column: "blobs.ulen", value: -1, wantErr: "negative extent"},
+		{name: "ulen one byte over the payload limit", column: "blobs.ulen", value: marc.MaxBlobPayload + 1, wantErr: "over the 536870912 byte payload limit"},
+		{name: "ulen max int64", column: "blobs.ulen", value: math.MaxInt64, wantErr: "payload limit"},
 		{name: "solid clen past end", solid: true, column: "blobs.clen", value: int64(len(solid)) + 1, wantErr: "exceed the"},
-		{name: "solid ulen max int64", solid: true, column: "blobs.ulen", value: math.MaxInt64, wantErr: "out of bounds"},
+		{name: "solid ulen max int64", solid: true, column: "blobs.ulen", value: math.MaxInt64, wantErr: "payload limit"},
 		{name: "solid block_offset max int64", solid: true, column: "blobs.block_offset", value: math.MaxInt64, wantErr: "out of bounds"},
 	}
 
