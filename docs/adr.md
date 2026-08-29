@@ -544,3 +544,63 @@ The estimate could account for the binary bytes it adds, which would make the pl
 - (-) react gains 257 bytes and the kubernetes tree loses 5, both from catalog compression noise on a changed meta string rather than from any change to stored content. The effect is under 0.002 pp and the blob regions are provably identical.
 - (-) `plan.Registry` is now a package-local type rather than `[]marc.Transform`, so a test that substitutes a registry constructs `plan.Entry` values. One existing test helper (`internal/plan/plan_test.go:withRegistry`) was updated for this.
 - Closes P0.1 of `.claude/doc/metacompression-proposals.md`. The broken syslog padding preservation contract that item also records was already addressed separately by `encodeDisabledFmts`, which matches `fmtSyslog`, `fmtLog4j` and `fmtPython` on decode but never emits them.
+
+---
+
+## ADR-021: `col-stream/v1` ships decode-only, its axis is real and this corpus is too small for it
+
+**Status**: Accepted
+**Date**: 2026-09-26
+
+### Context
+
+Item T1 of `.claude/doc/metacompression-proposals.md` proposed `col-stream/v1`: transpose delimiter-separated row data into column-major streams, and store integer columns as delta plus zigzag plus varint. The axis is explicit non-byte structure plus arithmetic relations between values. A row-major CSV interleaves unrelated value domains on every line; transposing gives the final zstd pass long runs of same-domain data, and LZ77 cannot subtract, so a counter incrementing by one costs one byte where its absolute decimal text cost six.
+
+A throwaway Python probe on the five largest loghub CSVs measured -12.7% against zstd -19 on the originals, with the delta step contributing 5 to 10 points over transposition alone. The kill criterion was fixed before implementation, as the proposal requires: below 5% on the loghub class, the transform is not enabled.
+
+The implementation is lossless, and both guards the proposal demanded are in it. Selection is by measurement: `Applicable` gates only on extension and size, and `Apply` compresses the content both ways and proceeds only on a 2% win. `Apply` then runs its own `Reverse` over the encoded file and compares byte-for-byte, returning `handled=false` on any divergence rather than an error, so the lossless contract is enforced at archive time and not only in tests.
+
+Measured on `experiments/ablation/corpus/loghub`, three runs per point, against a build identical except for the `Write` flag:
+
+| variant | archive bytes | wall |
+|---|---|---|
+| decode-only (as shipped) | 2 047 871 | 0.10 s |
+| write-enabled | 2 003 983 | 0.36 s |
+| write-enabled, predicate disabled, every CSV forced | 1 993 761 | n/a |
+
+**-43 888 bytes, -2.14%, against a 5% bar.** The criterion failed.
+
+The predicate is not the cause. Forcing every CSV through reaches only -2.64%, so the measured predicate captures 81% of the total gain available on this corpus while still refusing the files that inflate: Mac at +9.4% and Zookeeper at +31.8% are rejected, and `TestArchive_colStreamDeclinesRegressingContent` pins that. Selecting on extension alone would have shipped those regressions, which is precisely the log-date-subst fault of ADR-020.
+
+Two things cap the result, and both were visible in the proposal's own reserve about scale:
+
+1. **Corpus composition.** loghub holds 6.5 MB of CSV in 12.2 MB of input, 53% by bytes. A CSV-class win is roughly halved at archive level before anything else happens. 7 of 34 CSVs are selected.
+2. **Byte-exactness costs bytes the probe never paid.** The Python probe did not reconstruct anything. The production encoder must, so it spends a quoting bit per field and a line-ending bit per row to survive `encoding/csv` normalizing quoting style, CRLF and trailing-newline presence away. On Hadoop that is the difference between -14.3% crude and -10.1% exact. The gap between the probe's -12.7% and the shipped class-level result is mostly this, and it is not recoverable without giving up byte-exactness, which is not on the table.
+
+### Decision
+
+**`col-stream/v1` is registered with `Write: false`.** The mechanism is ADR-020's: the planner never selects it, the extract path resolves it unconditionally, and enabling it later is a one-field change.
+
+The transform is kept rather than deleted, for three reasons. Its axis is sound and independently confirmed: the delta step adds 5 to 10 points over transposition alone on every file where transposition wins at all, which is the arithmetic axis doing exactly what the axiom predicts. Its verdict is corpus-bound, not design-bound, so a corpus whose CSV share is dominant could reverse it without a line of code changing. And registering it decode-only makes any archive that ever carried it extractable, which is the guarantee ADR-020 established and which a deletion would forfeit.
+
+Re-enabling requires re-measuring against a CSV-dominant corpus, not assuming. The registry comment carries the numbers so the next reader does not have to rediscover them.
+
+### Rejected: tuning the predicate margin to clear the bar
+
+The 2% win margin could be lowered to admit more files. It was rejected because the ceiling is -2.64% with the predicate off entirely: there is no margin setting that reaches 5%, and lowering it trades a guaranteed refusal of inflating files for gains that do not exist. A kill criterion that gets relaxed once it fails is not a kill criterion.
+
+### Rejected: deciding on a 256 KB sample
+
+The proposal specified a sampled decision, and it was implemented first. It selected 5 of 34 CSVs and yielded -1.64%. Measuring the sample's verdict against the whole file's showed the sample is systematically pessimistic: Hadoop measures +4.9% sampled against -10.1% whole, OpenStack +7.4% against -2.5%, because a truncated table has shorter numeric runs and less long-range column redundancy than the file it came from.
+
+The decisive comparison therefore runs on the whole file, and the sample is kept only as a reject-only pre-filter at a slack 20% margin. This costs nothing: `Apply` already encodes the whole file and already decodes it whole for the verify pass, so the bytes are in hand either way. The bias is one-directional, so sampling never produced a false accept, only missed gains. It moved the result from -1.64% to -2.14% and still did not clear the bar.
+
+### Consequences
+
+- (+) As shipped, the three bench corpora are byte-identical to the pre-change baseline at unchanged wall time. loghub archives to 2 047 871 bytes, the same figure ADR-020 recorded, because `RegistryIDs()` returns only write-selectable IDs and the `transforms` meta string is therefore unchanged. A decode-only transform costs the write path nothing, as ADR-020 intended.
+- (+) Fuzzing found a real data-loss bug that the unit tests missed: a file ending in a bare `\r` with no trailing newline lost that byte, because `splitRows` treated a trailing `\r` as a terminator when no `\n` followed. Go wrote the failing input to `testdata/fuzz/` as a permanent regression seed. After the fix, 8.1M executions on the round-trip fuzzer, 4.0M on corrupt-blob decode and 10.4M on quoting recovery are clean. The verify-or-fall-back guard would have sent that file down the raw path in production rather than corrupting it, but the bug was real and is now pinned.
+- (+) The negative result is itself the finding, and it sharpens the axiom. "Attacks an axis zstd cannot see" is necessary and not sufficient: the axis must also carry enough of the corpus to matter. T1 is the first item to fail on share rather than on mechanism.
+- (-) Were it write-enabled, react would gain 254 bytes and the kubernetes tree 6, on corpora where the transform applies to nothing. react holds no CSV at all, and both kubernetes CSVs (36 and 28 bytes) are below the 4 KB `minSize` gate. The whole difference is level-11 zstd being non-monotonic on a catalog whose `transforms` meta string grew by one entry, the same effect ADR-020 measured in the other direction. Shipped decode-only, this does not arise.
+- (-) The write path carries a transform that is never selected, and its `Apply` is consequently not exercised by any archive run. The e2e test enables it through the registry seam to cover it, so the code is tested but not in production use.
+- (-) `--explain` on a write-enabled build reports `~298.7 KB saved` for 7 files against an actual archive delta of 43 888 bytes. The figure is the sum of pre-compression byte reductions, which is the only thing a transform can report without compressing twice, and it remains a poor predictor of archive effect. ADR-020 recorded the same discrepancy for logdate.
+- Closes T1 of `.claude/doc/metacompression-proposals.md`, negatively. The "differenciateur publiable" framing of lot 4 does not survive the measurement: -2.14% on one corpus is not a headline.
