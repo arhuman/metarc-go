@@ -439,6 +439,43 @@ func TestApply_DecodeOnlyFormatsNotEncoded(t *testing.T) {
 	}
 }
 
+// The gate is a density test, not a count test. A file with enough absolute
+// matches to clear the floor but a minority of timestamped lines must be
+// rejected: tokenizing a sparse minority replaces text zstd compresses well
+// with high-entropy tokens it cannot, and measurably inflates the archive.
+func TestApply_RejectsSparseTimestamps(t *testing.T) {
+	var lines []string
+	for i := range 400 {
+		if i%7 == 0 {
+			lines = append(lines, fmt.Sprintf("2026-05-11T08:42:%02dZ request id=%d", i%60, i))
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("plain narrative line without a timestamp id=%d", i))
+	}
+	content := strings.Join(lines, "\n") + "\n"
+
+	// ~14% density: well above the 10-match floor, well below a majority.
+	_, handled, _ := runApply(t, content)
+	if handled {
+		t.Fatal("expected handled=false: timestamped lines are a minority of the sample")
+	}
+}
+
+// Blank lines must not count against the density ratio: a double-spaced log is
+// as dense as the same log single-spaced.
+func TestApply_BlankLinesExcludedFromDensity(t *testing.T) {
+	var lines []string
+	for i := range 100 {
+		lines = append(lines, fmt.Sprintf("2026-05-11T08:42:%02dZ event %d", i%60, i))
+		lines = append(lines, "")
+	}
+	content := strings.Join(lines, "\n") + "\n"
+
+	if _, handled, _ := runApply(t, content); !handled {
+		t.Fatal("expected handled=true: every non-empty line carries a timestamp")
+	}
+}
+
 // A file gated in by enabled formats must still keep decode-only timestamps verbatim.
 func TestRoundTrip_MixedEnabledAndDecodeOnly(t *testing.T) {
 	const log4jTS = "2026-05-11 10:36:19,978"

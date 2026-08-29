@@ -207,8 +207,9 @@ type dateParams struct {
 	Fmt uint8 `json:"fmt"` // 0 = multi-format mode (each token self-describes its format)
 }
 
-// Apply reads the file, checks that >50% of non-empty lines carry timestamps of any
-// recognized format, then replaces each timestamp with a 13-byte token. Each token
+// Apply samples the first 200 lines and requires both at least 10 timestamp
+// matches and a strict majority of non-empty sampled lines matching, then
+// replaces each timestamp with a 13-byte token. Each token
 // is self-describing: its fmt byte encodes the quote style (bits 7-6) and format id
 // (bits 5-0), so mixed-format files are handled correctly. Formats listed in
 // encodeDisabledFmts are matched but copied verbatim, never tokenized.
@@ -217,12 +218,17 @@ type dateParams struct {
 // frequency: the most common pattern is tried first on each position, and the
 // winning pattern is promoted to front for the next position.
 func (l *LogDate) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.ReadSeeker, sink marc.BlobSink) (marc.Result, bool, error) {
-	// Sample phase: read up to 2000 lines, count pattern matches.
-	const sampleLineLimit = 200
+	// Sample phase: read up to sampleLineLimit lines, count pattern matches.
+	const (
+		sampleLineLimit  = 200
+		minSampleMatches = 10
+	)
 	sampleReader := bufio.NewReaderSize(src, 64*1024)
 	sampleLines := make([]string, 0, sampleLineLimit)
 	patCounts := make([]int, len(allPatterns))
 	var totalMatched int
+	var timestampedLines int
+	var nonEmptyLines int
 
 	for len(sampleLines) < sampleLineLimit {
 		line, err := sampleReader.ReadString('\n')
@@ -231,6 +237,9 @@ func (l *LogDate) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.
 				return marc.Result{}, false, nil
 			}
 			sampleLines = append(sampleLines, line)
+			if strings.TrimSpace(line) != "" {
+				nonEmptyLines++
+			}
 			lb := []byte(line)
 			// Best match wins (earliest, then longest) so a decode-only format
 			// shields its prefix from a shorter enabled one (Log4j vs GINLog).
@@ -244,9 +253,15 @@ func (l *LogDate) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.
 					bestStart, bestEnd, bestIdx = loc[0], loc[1], patIdx
 				}
 			}
-			if bestIdx >= 0 && !encodeDisabledFmts[allFmtBytes[bestIdx]&0x1F] {
-				patCounts[bestIdx]++
-				totalMatched++
+			if bestIdx >= 0 {
+				// Timestamped either way: a decode-only format is carried
+				// verbatim by design, so it counts toward density even though
+				// it is never tokenized.
+				timestampedLines++
+				if !encodeDisabledFmts[allFmtBytes[bestIdx]&0x1F] {
+					patCounts[bestIdx]++
+					totalMatched++
+				}
 			}
 		}
 		if err == io.EOF {
@@ -257,8 +272,16 @@ func (l *LogDate) Apply(ctx context.Context, _ marc.Entry, _ marc.Facts, src io.
 		}
 	}
 
-	// Gate: absolute threshold of 10 matches.
-	if totalMatched < 10 {
+	// Gate: a strict majority of non-empty sampled lines must carry a timestamp,
+	// and enough of them must be encodable to be worth a rewrite. Density is what
+	// makes the transform pay: a file where most lines have no timestamp costs a
+	// full rewrite and a params blob to tokenize a sparse minority.
+	//
+	// The ratio counts decode-only formats, which are preserved verbatim rather
+	// than tokenized; the floor counts only encodable matches, so a file that is
+	// entirely decode-only is rejected instead of rewritten for no gain.
+	if totalMatched < minSampleMatches || nonEmptyLines == 0 ||
+		timestampedLines*2 <= nonEmptyLines {
 		return marc.Result{}, false, nil
 	}
 
