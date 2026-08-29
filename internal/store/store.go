@@ -243,6 +243,30 @@ func (w *Writer) writeAndHash(data []byte) error {
 	return nil
 }
 
+// copyAndHash streams r into outFile and through the running hash, holding one
+// fixed buffer rather than the whole payload. The hash covers the same bytes in
+// the same order as writeAndHash would, so the footer checksum is unchanged.
+//
+// The loop is explicit because io.Copy would find ReadFrom on *os.File and
+// choose its own buffering, which is the allocation this exists to bound.
+func (w *Writer) copyAndHash(r io.Reader) error {
+	buf := make([]byte, 1<<20)
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			if err := w.writeAndHash(buf[:n]); err != nil {
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
 // internName returns the name_id for a filename, inserting if needed.
 func (w *Writer) internName(name string) (int64, error) {
 	if id, ok := w.nameCache[name]; ok {
@@ -445,14 +469,15 @@ func (w *Writer) writeFileWithSHA(ctx context.Context, e marc.Entry, nameID, par
 	// the original SHA must not be associated with transformed content.
 	// sourceSHA is set only for raw (untransformed) writes below.
 	sink := &blobSink{
-		w:         w,
-		compress:  w.compressor,
-		zstdEnc:   w.zstdEnc,
-		dictEnc:   w.dictEnc,
-		relPath:   e.RelPath,
-		zstdLevel: w.zstdCfg.Blob,
-		dictLevel: w.zstdCfg.Dict,
-		window:    w.zstdCfg.WindowSize,
+		w:           w,
+		compress:    w.compressor,
+		zstdEnc:     w.zstdEnc,
+		dictEnc:     w.dictEnc,
+		relPath:     e.RelPath,
+		zstdLevel:   w.zstdCfg.Blob,
+		dictLevel:   w.zstdCfg.Dict,
+		window:      w.zstdCfg.WindowSize,
+		payloadSize: e.Info.Size(),
 	}
 
 	zeroSHA := [32]byte{}

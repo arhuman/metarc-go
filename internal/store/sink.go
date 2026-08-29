@@ -18,15 +18,16 @@ import (
 // Each blob is written as a chunk: [Type=0x01 (1B)][Len uint32 BE][payload].
 // The offset stored in the blobs table points to the start of the chunk header.
 type blobSink struct {
-	w         *Writer
-	compress  string
-	zstdEnc   *zstd.Encoder
-	dictEnc   *zstd.Encoder     // encoder with dictionary (when dict-compress enabled)
-	sourceSHA [32]byte          // original content SHA for dedup (set by writeFileWithSHA)
-	relPath   string            // entry the sink is writing for, used to name it in errors
-	zstdLevel zstd.EncoderLevel // level for per-blob zstd encoder
-	dictLevel zstd.EncoderLevel // level for dict-encoded zstd encoder
-	window    int               // optional zstd window size (0 = library default)
+	w           *Writer
+	compress    string
+	zstdEnc     *zstd.Encoder
+	dictEnc     *zstd.Encoder     // encoder with dictionary (when dict-compress enabled)
+	sourceSHA   [32]byte          // original content SHA for dedup (set by writeFileWithSHA)
+	relPath     string            // entry the sink is writing for, used to name it in errors
+	zstdLevel   zstd.EncoderLevel // level for per-blob zstd encoder
+	dictLevel   zstd.EncoderLevel // level for dict-encoded zstd encoder
+	window      int               // optional zstd window size (0 = library default)
+	payloadSize int64             // entry size from scan, used to pick the streaming path
 }
 
 // Write computes BLAKE3-256 while streaming, deduplicates, and writes the blob chunk.
@@ -46,7 +47,16 @@ func (s *blobSink) Write(_ context.Context, r io.Reader) (marc.BlobID, error) {
 
 // WriteWithSHA writes blob data with a pre-computed BLAKE3-256 hash,
 // skipping the hash computation. Used when analyze workers have already hashed.
+//
+// A blob large enough to become a solid block of its own is compressed as a
+// stream rather than buffered whole. Buffering one costs several times the
+// payload (the payload, the encoder's working buffer and the compressed result
+// are resident together), which is what a single large file does to peak RSS.
 func (s *blobSink) WriteWithSHA(_ context.Context, r io.Reader, sha [32]byte) (marc.BlobID, error) {
+	if s.streamApplies(s.payloadSize) {
+		return s.writeStreaming(r, sha, s.payloadSize)
+	}
+
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return 0, fmt.Errorf("blobSink.WriteWithSHA: read: %w", err)
@@ -71,6 +81,50 @@ func (s *blobSink) WriteRaw(_ context.Context, r io.Reader) (marc.BlobID, error)
 	var sha [32]byte
 	copy(sha[:], h.Sum(nil))
 	return s.writeDataRaw(data, sha)
+}
+
+// streamApplies reports whether a payload of this size takes the streaming path.
+//
+// The candidate is a blob that would become a solid block of its own: large
+// enough that buffering it sets peak RSS, and already destined for a frame with
+// no other member, so streaming changes how it is written and not what it is
+// grouped with. Everything that shares a block stays on the buffered path,
+// because a shared frame only pays off concatenated. The dict modes are
+// excluded: their encoder is selected per blob.
+//
+// size comes from the caller's already-stat'ed entry rather than from r, so
+// deciding costs no syscall and no open on the blobs that skip this path.
+func (s *blobSink) streamApplies(size int64) bool {
+	if s.compress != "zstd" || s.w.dictData != nil || s.w.dictSimple {
+		return false
+	}
+	if s.w.solidAcc == nil {
+		return false
+	}
+	// Mirrors addBlob's oversized test: at or below the block size the blob
+	// joins the shared frame and must stay buffered.
+	return size > s.w.solidAcc.maxBlockSize
+}
+
+// writeStreaming routes an oversized blob into its own streamed solid block.
+// It flushes any block in flight first, because the streamed block has to stand
+// alone, and resolves dedup up front: the hash is already known, so a duplicate
+// costs neither a read nor an encode.
+func (s *blobSink) writeStreaming(r io.Reader, sha [32]byte, ulen int64) (marc.BlobID, error) {
+	if err := checkBlobPayloadSize(s.relPath, ulen); err != nil {
+		return 0, fmt.Errorf("blobSink.writeStreaming: %w", err)
+	}
+	if id, ok := s.Reuse(sha); ok {
+		return id, nil
+	}
+	if err := s.w.solidAcc.flush(); err != nil {
+		return 0, fmt.Errorf("blobSink.writeStreaming: flush open block: %w", err)
+	}
+	id, err := s.w.solidAcc.addOversizedStream(r, ulen, sha, s.sourceSHA)
+	if err != nil {
+		return 0, fmt.Errorf("blobSink.writeStreaming: %w", err)
+	}
+	return id, nil
 }
 
 // writeDataRaw is like writeData but never compresses and never goes

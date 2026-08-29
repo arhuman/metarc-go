@@ -3,7 +3,9 @@ package store
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 	"math"
+	"os"
 
 	"github.com/arhuman/metarc-go/pkg/marc"
 	"github.com/klauspost/compress/zstd"
@@ -25,7 +27,8 @@ type solidAccumulator struct {
 	blockCounter int64         // incrementing block ID
 	currentExt   string        // file extension shared by blobs in the current block
 	extInit      bool          // currentExt has been set at least once
-	enc          *zstd.Encoder // built on first flush, reused for every block
+	enc          *zstd.Encoder // built on first use, reused for every block
+	encDirty     bool          // enc was Reset onto a stream and needs rebinding before EncodeAll
 }
 
 // setExtension declares the extension of blobs that are about to be added.
@@ -147,6 +150,106 @@ func (sa *solidAccumulator) addBlob(data []byte, sha [32]byte, sourceSHA [32]byt
 	return marc.BlobID(rowID), nil
 }
 
+// addOversizedStream writes a blob larger than maxBlockSize as its own solid
+// block, compressing r as a stream rather than buffering it. The block is
+// byte-compatible with the one addBlob produces: same chunk type, same encoder
+// settings, one blob at offset 0.
+//
+// It exists because the buffered path holds the payload, the encoder's working
+// buffer and the compressed result at once, so a single large file sets peak
+// RSS for the whole archive. The caller must have flushed any open block first,
+// since this block has to stand alone.
+//
+// The spool is the price of the chunk header: [type][len][payload] needs the
+// compressed length before the payload, and streaming only learns it at the end.
+func (sa *solidAccumulator) addOversizedStream(r io.Reader, ulen int64, sha [32]byte, sourceSHA [32]byte) (marc.BlobID, error) {
+	if err := sa.ensureEncoder(); err != nil {
+		return 0, err
+	}
+
+	spool, err := os.CreateTemp("", "marc-solid-*.zst")
+	if err != nil {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: create spool: %w", err)
+	}
+	spoolPath := spool.Name()
+	defer func() {
+		_ = spool.Close()
+		_ = os.Remove(spoolPath)
+	}()
+
+	sa.enc.Reset(spool)
+	if _, err := io.Copy(sa.enc, r); err != nil {
+		_ = sa.enc.Close()
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: encode: %w", err)
+	}
+	if err := sa.enc.Close(); err != nil {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: close encoder: %w", err)
+	}
+	// Close finishes the frame but leaves the encoder unusable until Reset;
+	// flush() resets it to nil-writer mode before its next EncodeAll.
+	sa.encDirty = true
+
+	clen, err := spool.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: spool size: %w", err)
+	}
+	if clen > math.MaxUint32 {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: solid block exceeds max chunk size (4 GB)")
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: rewind spool: %w", err)
+	}
+
+	chunkOffset := sa.w.blobOff
+	var chunkHeader [5]byte
+	chunkHeader[0] = marc.ChunkTypeSolidBlock
+	binary.BigEndian.PutUint32(chunkHeader[1:5], uint32(clen))
+	if err := sa.w.writeAndHash(chunkHeader[:]); err != nil {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: write chunk header: %w", err)
+	}
+	if err := sa.w.copyAndHash(spool); err != nil {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: write chunk payload: %w", err)
+	}
+	sa.w.blobOff += int64(len(chunkHeader)) + clen
+
+	var sourceSHAParam any
+	zeroSHA := [32]byte{}
+	if sourceSHA != zeroSHA {
+		sourceSHAParam = sourceSHA[:]
+	}
+	res, err := sa.w.tx.Exec(
+		`INSERT INTO blobs (sha, source_sha, offset, clen, ulen, compressed, block_id, block_offset) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sha[:], sourceSHAParam, chunkOffset, clen, ulen, marc.CompressSolid, sa.blockCounter, int64(0),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("solidAccumulator.addOversizedStream: insert blob: %w", err)
+	}
+	rowID, _ := res.LastInsertId()
+	sa.blockCounter++
+	return marc.BlobID(rowID), nil
+}
+
+// ensureEncoder builds the shared solid encoder if it does not exist yet.
+func (sa *solidAccumulator) ensureEncoder() error {
+	if sa.enc != nil {
+		return nil
+	}
+	window := sa.w.zstdCfg.WindowSize
+	if window == 0 {
+		window = solidWindowFor(sa.maxBlockSize)
+	}
+	enc, err := zstd.NewWriter(nil,
+		zstd.WithEncoderLevel(sa.w.zstdCfg.Solid),
+		zstd.WithEncoderConcurrency(1),
+		zstd.WithWindowSize(window),
+	)
+	if err != nil {
+		return fmt.Errorf("solidAccumulator: create encoder: %w", err)
+	}
+	sa.enc = enc
+	return nil
+}
+
 // flush compresses the accumulated buffer as one zstd frame, writes it as a
 // solid block chunk, and updates all pending blob rows with the final offset.
 func (sa *solidAccumulator) flush() error {
@@ -158,20 +261,14 @@ func (sa *solidAccumulator) flush() error {
 	// writer-configured solid-block level. The encoder is built once and
 	// reused: at level 11 its match tables are sized from the window, so
 	// rebuilding one per block would dominate the cost of flushing.
-	if sa.enc == nil {
-		window := sa.w.zstdCfg.WindowSize
-		if window == 0 {
-			window = solidWindowFor(sa.maxBlockSize)
-		}
-		enc, err := zstd.NewWriter(nil,
-			zstd.WithEncoderLevel(sa.w.zstdCfg.Solid),
-			zstd.WithEncoderConcurrency(1),
-			zstd.WithWindowSize(window),
-		)
-		if err != nil {
-			return fmt.Errorf("solidAccumulator.flush: create encoder: %w", err)
-		}
-		sa.enc = enc
+	if err := sa.ensureEncoder(); err != nil {
+		return fmt.Errorf("solidAccumulator.flush: %w", err)
+	}
+	// A streamed block left the encoder bound to its spool and closed;
+	// EncodeAll needs it back in the unbound state NewWriter(nil) gives.
+	if sa.encDirty {
+		sa.enc.Reset(nil)
+		sa.encDirty = false
 	}
 	compressed := sa.enc.EncodeAll(sa.buf, nil)
 
