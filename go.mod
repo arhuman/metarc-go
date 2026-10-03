@@ -3,7 +3,7 @@ module github.com/arhuman/metarc-go
 go 1.26.0
 
 require (
-	github.com/klauspost/compress v1.20.0
+	github.com/klauspost/compress v1.20.1
 	github.com/spf13/cobra v1.10.2
 	github.com/zeebo/blake3 v0.2.4
 	modernc.org/sqlite v1.60.1
