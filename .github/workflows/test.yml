@@ -13,10 +13,10 @@ jobs:
   test:
     strategy:
       matrix:
-        # Lowest entry must stay >= the `go` directive in go.mod (1.25.0).
+        # Lowest entry must stay >= the `go` directive in go.mod (1.26.0).
         # A 1.24 toolchain has to switch via GOTOOLCHAIN to satisfy the module,
         # and the switched toolchain fails with `no such tool "covdata"`.
-        go-version: ["1.25", "1.26"]
+        go-version: ["1.26", "1.27"]
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
 
@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Install tools
         run: make tools
@@ -57,7 +57,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Generate coverage
         run: go test -short -coverprofile=coverage.out ./...
@@ -80,7 +80,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Install commitlint
         run: go install github.com/conventionalcommit/commitlint@v0.12.0
