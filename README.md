@@ -136,7 +136,7 @@ is 12% of the input bytes but roughly 58% of the resulting archive.
 
 `./scripts/run_bench.sh --type size`
 
-_marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.12.0 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar |
 |------|---------------|-------|-------------------------|-----------|---------------|
@@ -160,7 +160,7 @@ baseline side too: marc wrote the same bytes, tar's shrank.
 
 `./scripts/run_bench.sh --type size --corpus tree`
 
-_marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.12.0 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 
 | Repo | Original size | Files | tar+zstd size | marc size | % size of tar | full clone |
 |------|---------------|-------|-------------------------|-----------|---------------|------------|
@@ -174,7 +174,7 @@ _marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5
 | bootstrap |  20M | 791 | 6.6M | 6.3M | **95.8%** | 97.8% |
 
 Rows sorted by advantage. This table is byte-reproducible: two builds hours
-apart (v0.10.0-15 and v0.11.1) produced these figures identically. bootstrap gains the
+apart (v0.10.0-15 and v0.12.0) produced these figures identically. bootstrap gains the
 least from dropping `.git` (2.0 points) because its source tree is itself full of
 incompressible content (fonts, images, minified bundles), so removing the
 packfiles unmasks little. Corpora rank by how much compressible text they hold.
@@ -188,7 +188,7 @@ Metarc optimizes for size, not for archive wall-clock.
 
 `./scripts/run_bench.sh --type time`
 
-_marc: metarc version v0.11.1 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
+_marc: metarc version v0.12.0 (c87305c1, 2026-08-14T11:49:32Z) | tar: bsdtar 3.5.3 - libarchive 3.7.4 zlib/1.2.12 liblzma/5.4.3 bz2lib/1.0.8 _
 _host: 26.5.2, Apple M3 Pro, 12 cores, 36G | timing: median of 3 runs, cache flushed before each run (cold) _
 
 | Repo | Files | tar+zstd arc | marc arc | tar+zstd ext | marc ext | marc speedup (arc) |
